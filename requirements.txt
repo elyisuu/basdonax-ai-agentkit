@@ -1,0 +1,26 @@
+# Las versiones estan acotadas a proposito: este repo vive en la
+# descripcion de un video y no se tiene que romper solo cuando salga
+# la proxima version mayor de LangChain.
+
+# --- LangChain + LangGraph -------------------------------------------------
+# LangGraph es lo que le da la memoria al agente y lo que después nos deja
+# enchufarlo a Telegram o WhatsApp sin reescribir el agente.
+langchain-core>=1.5,<2
+langgraph>=1.2,<2
+langgraph-checkpoint>=4.1,<5
+langgraph-checkpoint-sqlite>=3.1,<4   # la memoria de MODO=test
+
+# --- Proveedores de modelos ------------------------------------------------
+# Podés borrar los que no vayas a usar.
+langchain-anthropic>=1.5,<2     # Claude
+langchain-openai>=1.4,<2         # OpenAI
+langchain-google-genai>=4.3,<5   # Gemini
+
+# --- Plataforma de pruebas (la web local) ----------------------------------
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-dotenv>=1.0,<2
+
+# --- Solo para MODO=produccion ---------------------------------------------
+# Descomentá esta línea cuando pases a Postgres:
+# langgraph-checkpoint-postgres>=2.0,<3
