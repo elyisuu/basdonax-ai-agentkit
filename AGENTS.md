@@ -38,13 +38,16 @@ Lo que importa acá es qué hace cada uno:
 | Archivo | Qué resuelve |
 |---|---|
 | `agente.py` | **El agente.** El grafo de LangGraph. Empezá por acá. |
+| `herramientas.py` | Lo que el agente puede hacer además de conversar. Hoy: el clima. |
 | `modelos.py` | Crea el modelo y le pregunta al proveedor cuáles tiene |
 | `memoria.py` | Los checkpointers: `ram` / `sqlite` / `postgres` |
 | `prompts.py` | Lee y guarda `prompts/sistema.md` |
 | `respuesta.py` | Parte una respuesta larga en varios mensajes |
 | `consola.py` | Que la terminal de Windows no rompa con las tildes |
 | `config.py` | Lee el `.env`. Única fuente de configuración. |
-| `canales/base.py` | La forma de un canal. Telegram y WhatsApp vienen después. |
+| `canales/base.py` | La forma de un canal. WhatsApp viene después. |
+| `canales/telegram.py` | **El bot de Telegram.** Polling, corre en tu máquina. |
+| `../Dockerfile` | Empaqueta **solo el bot** (`bot_telegram.py`), no la web |
 | `web/` | La plataforma de pruebas (FastAPI + un solo HTML) |
 
 ---
@@ -79,7 +82,7 @@ Ninguna credencial en el código, ni una. Las claves se leen únicamente en
 | Agregar un proveedor nuevo | `modelos.py` | Una rama en `crear_modelo()` + una en `listar_modelos()` |
 | Cambiar dónde se guardan las charlas | `.env` (`MODO`) | O una función nueva en `memoria.py` |
 | Cambiar la personalidad | `prompts/sistema.md` | Es texto plano |
-| **Agregar herramientas** | `agente.py` | `self.modelo.bind_tools([...])` + nodo `ToolNode` + `add_conditional_edges` |
+| **Agregar herramientas** | `herramientas.py` | Una función con `@tool` + sumarla a `HERRAMIENTAS`. El grafo ya está armado. |
 | Agregar un canal (Telegram, WhatsApp) | archivo nuevo | Traducir mensaje entrante → `agente.responder(texto, conversacion=<chat_id>)` |
 | Nueva variable de configuración | `config.py` | Campo en `Config` + lectura en `desde_entorno()` + línea en `.env.example` |
 | Que se pueda editar desde la web | `config.py` | Agregarla a `AJUSTABLES` + campo en `AjustesEntrantes` (`web/app.py`) + control en la barra de estado |
@@ -117,8 +120,20 @@ La instalación paso a paso está en el
 desincronicen. Lo que hace falta saber:
 
 ```bash
-python servidor.py    # la plataforma de pruebas, en http://localhost:8000
-python chat.py        # lo mismo pero por terminal
+python servidor.py     # la plataforma de pruebas, en http://localhost:8000
+python chat.py         # lo mismo pero por terminal
+python bot_telegram.py # el agente atendiendo en Telegram (polling, local)
+```
+
+El bot se llama `bot_telegram.py` y no `telegram.py` a propósito: un módulo
+llamado `telegram` en la raíz taparía la librería del mismo nombre si algún
+día se instala.
+
+Para `MODO=produccion` hacen falta dos paquetes que **no** están en el
+`requirements.txt`, y en Windows el segundo no es opcional:
+
+```bash
+pip install "langgraph-checkpoint-postgres>=3.1,<4" "psycopg[binary]"
 ```
 
 Para los tests hace falta pytest, que **no** está en `requirements.txt`:
@@ -140,6 +155,24 @@ Cosas que parecen bugs y no lo son, o que cuestan de encontrar:
 
 - **`stream_usage=True` en `ChatOpenAI`**: sin eso, OpenAI no informa tokens
   cuando la respuesta llega en streaming. Quedan en 0.
+- **`use_responses_api=True` en `ChatOpenAI`, y no se puede sacar.** Por el
+  endpoint viejo (`/v1/chat/completions`), pedirle herramientas a un modelo que
+  razona —toda la familia gpt-5— devuelve un 400: *"Function tools with
+  reasoning_effort are not supported... use /v1/responses"*. La otra salida que
+  ofrece el propio error es apagarle el razonamiento al modelo, que es pagar
+  por uno y usar otro. Con modelos viejos (gpt-4.1) el problema no aparece, así
+  que si lo sacás no lo vas a ver hasta probar con un gpt-5.
+- **Los resultados de las herramientas también salen por el stream.**
+  `responder_en_vivo()` filtra los `ToolMessage` a propósito: sin ese filtro, la
+  persona ve el texto crudo de la consulta al clima en pantalla y después la
+  respuesta de verdad.
+- **Con herramientas el modelo habla dos veces**, así que la suma de chunks de
+  `responder_en_vivo()` termina juntando el gasto de las dos llamadas. Es lo que
+  querés: es lo que costó la respuesta. Ojo que `responder()` (sin streaming)
+  informa solo los tokens del último mensaje, porque mira `messages[-1]`.
+- **`GenericFakeChatModel` no implementa `bind_tools()`** y el grafo lo llama al
+  construirse. Por eso los tests usan `ModeloFalso`, que lo agrega. Si armás un
+  modelo falso nuevo, acordate o no arranca ni un test.
 - **Los chunks se suman** (`chunk_a + chunk_b`) en `responder_en_vivo()`. No es
   cosmético: varios proveedores mandan el conteo de tokens recién en el
   último chunk, y sumando es la única forma de tenerlo completo.
@@ -152,8 +185,36 @@ Cosas que parecen bugs y no lo son, o que cuestan de encontrar:
   atiende en varios hilos y sin eso rompe.
 - **El pool de Postgres se deja abierto a propósito** en `memoria.postgres()`.
   Si se cierra el context manager, el checkpointer muere en el primer mensaje.
-- **`trim_messages` cuenta mensajes, no tokens**, porque le pasamos
-  `token_counter=len`. `MEMORIA_MENSAJES=20` son 20 mensajes, no 20 tokens.
+- **`langgraph-checkpoint-postgres` tiene que ser 3.x.** La 2.x arrastra un
+  `langgraph-checkpoint` viejo (2.1) que se pelea con `langgraph` 1.2 y con el
+  checkpointer de SQLite. `pip install` lo deja instalar igual y lo avisa como
+  un warning que es fácil pasar por alto; el entorno queda roto.
+- **`psycopg` va con `[binary]` en Windows.** Sin eso el import falla con
+  *"no pq wrapper available"* porque no encuentra la libpq del sistema. El
+  paquete está instalado y el error igual aparece.
+- **El offset de Telegram se adelanta aunque el mensaje no sirva**
+  (`Telegram.escuchar()`). Telegram reenvía todo lo que no le confirmaste, así
+  que si alguien manda una foto y no avanzamos, esa foto vuelve para siempre y
+  el bot se queda trabado ahí sin atender a nadie más.
+- **El `chat_id` va como texto** al usarse de `thread_id`. Un `555` y un
+  `"555"` son dos conversaciones distintas para LangGraph.
+- **El bot no expone puerto y eso confunde a los PaaS.** Al desplegarlo, el
+  panel le asigna un dominio solo y después lo marca como *unhealthy* porque
+  nadie contesta ahí. No está roto: con polling nadie entra al bot, sale él.
+  Hay que borrarle el dominio y dejar el health check apagado.
+- **Dos instancias del bot se roban los mensajes.** Telegram le entrega cada
+  mensaje a quien lo pide primero, así que si corren el servidor y la máquina
+  local a la vez, las respuestas salen la mitad de cada lado. Es la falla más
+  confusa de todas, porque *parece* que anda a veces sí y a veces no.
+- **En un contenedor, `MODO=test` pierde las conversaciones en cada deploy**:
+  el archivo de SQLite vive en el disco del contenedor y ese disco se
+  descarta. En un servidor va Postgres.
+- **`MEMORIA_MENSAJES=20` son 20 mensajes, no 20 tokens.** Acá había un
+  `trim_messages(token_counter=len)`; ahora es `_recortar()`, que corta por
+  turnos completos (ver la sección de herramientas). La unidad no cambió: se
+  siguen contando mensajes. Lo que cambió es que el corte cae siempre en el
+  borde de un turno, así que el total puede quedar unos mensajes abajo del tope
+  antes que partir una vuelta de herramienta al medio.
 - **La lista de modelos de OpenAI trae todo junto** (imágenes, audio,
   embeddings) y hay que filtrarla; la de Anthropic ya viene limpia y ordenada.
 - **`max_salida` solo lo informan Anthropic y Google.** OpenAI no lo expone en
@@ -180,8 +241,8 @@ Cosas que parecen bugs y no lo son, o que cuestan de encontrar:
 
 No lo agregues salvo que te lo pidan: son los próximos videos de la serie.
 
-- Herramientas (el agente solo conversa)
-- Canales de mensajería (Telegram, WhatsApp)
+- Más herramientas (hay una sola: el clima)
+- WhatsApp (Telegram ya está: `canales/telegram.py`)
 - RAG / base de conocimiento
 - Autenticación en la plataforma de pruebas (es local, un solo usuario)
 - Varias conversaciones en paralelo en la web (usa un `thread_id` fijo)
@@ -190,36 +251,44 @@ No lo agregues salvo que te lo pidan: son los próximos videos de la serie.
 
 ## Cómo se agrega una herramienta
 
-Va en `agente.py`, en `_construir_grafo()`. El grafo pasa de un nodo suelto a
-un ciclo: modelo → herramientas → modelo, hasta que el modelo deja de pedirlas.
+**El grafo ya es un ciclo** (modelo → herramientas → modelo, hasta que el
+modelo deja de pedirlas), así que agregar una es una sola cosa: escribir la
+función en `herramientas.py` y sumarla a `HERRAMIENTAS`. `agente.py` no se
+toca.
 
 ```python
-from langchain_core.tools import tool
-from langgraph.prebuilt import ToolNode, tools_condition
-
 @tool
-def clima(ciudad: str) -> str:
-    """Dice el clima de una ciudad."""     # ← el docstring es lo que lee el modelo
-    return f"En {ciudad} hay 22 grados y está despejado."
+def clima(lugar: str) -> str:
+    """Dice el clima que hace ahora mismo en una ciudad."""  # ← esto lee el modelo
+    ...
 
-HERRAMIENTAS = [clima]
-
-# En _construir_grafo(), el modelo tiene que saber que existen:
-modelo = self.modelo.bind_tools(HERRAMIENTAS)
-
-grafo.add_node("modelo", nodo_modelo)
-grafo.add_node("herramientas", ToolNode(HERRAMIENTAS))
-grafo.add_edge(START, "modelo")
-grafo.add_conditional_edges("modelo", tools_condition)  # ¿pidió una herramienta?
-grafo.add_edge("herramientas", "modelo")                # y vuelve al modelo
+HERRAMIENTAS = [clima]   # ← la única lista que mira el grafo
 ```
 
-> ⚠️ **La trampa que te vas a comer.** `_armar_entrada()` recorta la
-> conversación con `trim_messages(..., start_on="human")`. Con herramientas,
-> ese recorte puede dejar un `AIMessage` con `tool_calls` **sin** su
-> `ToolMessage` (o al revés), y ahí el proveedor devuelve un 400 que no dice
-> nada útil. Cuando agregues herramientas, el recorte tiene que cortar en un
-> par completo — no en cualquier mensaje.
+Tres cosas que importan:
+
+- **El docstring es el prompt.** Es lo único que el modelo lee para decidir si
+  la herramienta le sirve y qué mandarle. Escribilo pensando en eso, no en un
+  programador que lee el código.
+- **Una herramienta no levanta excepciones: devuelve el problema como texto.**
+  Si explota, LangGraph corta la respuesta entera y la persona ve un error
+  crudo. Devolviéndolo, el modelo lo lee y lo explica. Está comentado en
+  `clima()`.
+- **Sin claves nuevas.** `clima` usa Open-Meteo justamente porque no pide
+  registro ni tarjeta: arrancar el repo no tiene que depender de sacar una
+  credencial más.
+
+> ✅ **La trampa que estaba acá ya está resuelta**, pero conviene entenderla
+> antes de tocar `_armar_entrada()`. Una vuelta de herramienta son tres
+> mensajes atados (el modelo la pide, la herramienta contesta, el modelo
+> responde) y los proveedores los exigen juntos. El `trim_messages()` que
+> había recortaba por mensaje suelto, así que tarde o temprano el corte caía
+> en el medio y dejaba un `AIMessage` con `tool_calls` **sin** su
+> `ToolMessage` → 400 del proveedor, sin explicación, y recién cuando la
+> conversación se hacía larga. Ahora `_recortar()` corta por **turnos**
+> completos y nunca los parte. `MEMORIA_MENSAJES` sigue contando mensajes.
+> Los tests que lo cuidan son `test_el_recorte_no_parte_una_vuelta_de_herramienta`
+> (probado con nueve topes distintos) y `test_el_turno_de_ahora_entra_entero_aunque_no_quepa`.
 
 ---
 
@@ -267,8 +336,11 @@ Esto todavía **no está implementado** y no hay que implementarlo sin que lo
 pidan. Está acá para que cualquier cosa que se agregue al núcleo no lo haga
 imposible después.
 
-**Video 2 — Telegram.** `canales/telegram.py` implementa `Canal`.
-`conversacion` = el `chat_id`. `MODO=produccion` con Postgres.
+**Video 2 — Telegram. ✅ Hecho.** `canales/telegram.py` implementa `Canal`,
+`conversacion` = el `chat_id`, y el bucle que las pega está en
+`bot_telegram.py` (raíz). Anda por *polling*, así que corre en la máquina de
+uno sin dominio ni puertos abiertos. Sirve igual con `MODO=test` (SQLite) que
+con `MODO=produccion` (Postgres): el agente no cambia.
 
 **Video 3 — WhatsApp.** `canales/whatsapp.py`, y ahí entra todo lo que
 separa un bot de demo de uno que atiende clientes:

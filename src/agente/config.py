@@ -50,6 +50,9 @@ class Config:
     cache: bool = True
     sqlite_ruta: str = "datos/conversaciones.db"
     postgres_dsn: str = ""
+    # Vacío mientras el agente corra solo en la computadora. Lo usa el bot
+    # de Telegram; el resto del proyecto ni lo mira.
+    telegram_token: str = ""
 
     @classmethod
     def desde_entorno(
@@ -100,6 +103,7 @@ class Config:
             cache=_booleano("CACHE", True),
             sqlite_ruta=os.getenv("SQLITE_RUTA", "datos/conversaciones.db"),
             postgres_dsn=(os.getenv("POSTGRES_DSN") or "").strip(),
+            telegram_token=(os.getenv("TELEGRAM_TOKEN") or "").strip(),
         )
 
 

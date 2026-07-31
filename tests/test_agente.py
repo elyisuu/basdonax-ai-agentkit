@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -19,6 +19,19 @@ from agente.agente import Agente  # noqa: E402
 from agente.config import RAIZ, Config, ErrorDeConfiguracion  # noqa: E402
 from agente.memoria import ram  # noqa: E402
 from agente.prompts import leer_prompt  # noqa: E402
+
+
+class ModeloFalso(GenericFakeChatModel):
+    """El modelo de mentira, pero que se deja atar herramientas.
+
+    GenericFakeChatModel no implementa bind_tools() y el grafo lo llama al
+    construirse, así que sin esto no arranca ni un test. Como el modelo falso
+    devuelve texto fijo y nunca pide una herramienta, alcanza con que se
+    devuelva a sí mismo.
+    """
+
+    def bind_tools(self, herramientas, **kwargs):
+        return self
 
 
 def agente_falso(respuestas: list[str], memoria_mensajes: int = 20) -> Agente:
@@ -34,7 +47,7 @@ def agente_falso(respuestas: list[str], memoria_mensajes: int = 20) -> Agente:
 
     a = Agente.__new__(Agente)
     a.config = config
-    a.modelo = GenericFakeChatModel(messages=iter(AIMessage(t) for t in respuestas))
+    a.modelo = ModeloFalso(messages=iter(AIMessage(t) for t in respuestas))
     a.checkpointer = ram()  # los tests no tocan el disco
     a.grafo = a._construir_grafo()
     return a
@@ -107,6 +120,85 @@ def test_recorta_la_memoria_vieja():
     assert len(entrada) - 1 <= 4, "tendría que haber recortado los más viejos"
 
 
+def conversacion_con_herramienta() -> list:
+    """Tres turnos, y el del medio usa una herramienta.
+
+    Los tres mensajes de esa vuelta (el pedido, el resultado y la respuesta)
+    están atados entre sí: el proveedor los exige juntos.
+    """
+    return [
+        HumanMessage("hola"),
+        AIMessage("buenas"),
+
+        HumanMessage("¿qué clima hace en Rosario?"),
+        AIMessage(
+            "",
+            tool_calls=[{"name": "clima", "args": {"lugar": "Rosario"}, "id": "abc"}],
+        ),
+        ToolMessage("Clima en Rosario: 19.1 °C", tool_call_id="abc"),
+        AIMessage("En Rosario hay 19 grados y está nublado."),
+
+        HumanMessage("gracias"),
+        AIMessage("de nada"),
+    ]
+
+
+def revisar_que_no_haya_huerfanos(mensajes: list) -> None:
+    """Ningún pedido de herramienta sin su resultado, ni al revés.
+
+    Esto es exactamente lo que el proveedor rechaza con un 400.
+    """
+    pedidos = {
+        llamada["id"]
+        for m in mensajes
+        if isinstance(m, AIMessage)
+        for llamada in (m.tool_calls or [])
+    }
+    resultados = {m.tool_call_id for m in mensajes if isinstance(m, ToolMessage)}
+
+    assert pedidos == resultados, (
+        f"quedaron colgados: pedidos sin resultado {pedidos - resultados}, "
+        f"resultados sin pedido {resultados - pedidos}"
+    )
+
+
+@pytest.mark.parametrize("tope", [1, 2, 3, 4, 5, 6, 7, 8, 20])
+def test_el_recorte_no_parte_una_vuelta_de_herramienta(tope):
+    """La trampa que avisa AGENTS.md, y la razón por la que no usamos
+    trim_messages().
+
+    Recortando por mensajes sueltos, tarde o temprano el corte cae en el medio
+    de una vuelta de herramienta y deja el pedido sin su resultado. El
+    proveedor responde un 400 que no explica nada, y recién aparece cuando la
+    conversación se hizo larga. Probamos todos los topes para que no haya un
+    número que lo rompa.
+    """
+    a = agente_falso(["x"], memoria_mensajes=tope)
+
+    entrada = a._armar_entrada({"messages": conversacion_con_herramienta()})
+    recortado = entrada[1:]  # el [0] es el prompt del sistema
+
+    revisar_que_no_haya_huerfanos(recortado)
+    assert isinstance(recortado[0], HumanMessage), "tiene que arrancar en la persona"
+
+
+def test_el_turno_de_ahora_entra_entero_aunque_no_quepa():
+    """Con memoria en 1, la vuelta de herramienta igual tiene que ir completa.
+
+    Es preferible pasarse del tope que mandar una conversación partida al
+    medio: recortada así, la llamada directamente falla.
+    """
+    a = agente_falso(["x"], memoria_mensajes=1)
+
+    # Una conversación que termina justo en medio de la vuelta de herramienta,
+    # que es como llega el estado cuando el grafo vuelve al modelo.
+    hasta_la_herramienta = conversacion_con_herramienta()[:5]
+    recortado = a._armar_entrada({"messages": hasta_la_herramienta})[1:]
+
+    revisar_que_no_haya_huerfanos(recortado)
+    assert len(recortado) == 3, "el turno entero: pedido, resultado y su human"
+
+
 def test_el_prompt_sale_del_archivo():
     a = agente_falso(["x"])
     a.config.cache = False  # sin caché el prompt viaja como texto pelado
@@ -174,6 +266,54 @@ def test_modo_test_guarda_en_sqlite(tmp_path):
     assert archivo.exists(), "tendría que haber creado el archivo de la base"
 
 
+def test_la_conexion_de_postgres_no_se_la_lleva_el_recolector(monkeypatch):
+    """El bug que solo aparece con el agente corriendo un rato.
+
+    `PostgresSaver.from_conn_string()` es un generador: adentro tiene un
+    `with Connection.connect(...)`. Si nadie se guarda una referencia, el
+    recolector de basura lo destruye, y destruirlo cierra la conexión.
+
+    No falla al conectar —ahí anda todo— sino en el primer mensaje que llega
+    después, con un "the connection is closed" que no se parece en nada a su
+    causa. En un script corto ni se nota, porque el proceso termina antes de
+    que el recolector actúe.
+    """
+    import gc
+    from contextlib import contextmanager
+
+    import langgraph.checkpoint.postgres as postgres_de_langgraph
+
+    from agente.memoria import postgres
+
+    cerrada: list[bool] = []
+
+    class GuardadorFalso:
+        def setup(self):
+            pass
+
+    @contextmanager
+    def conexion_falsa(dsn, **kwargs):
+        try:
+            yield GuardadorFalso()
+        finally:
+            cerrada.append(True)
+
+    monkeypatch.setattr(
+        postgres_de_langgraph.PostgresSaver,
+        "from_conn_string",
+        staticmethod(conexion_falsa),
+    )
+
+    guardador = postgres("postgresql://loquesea")
+    gc.collect()  # el recolector, ahora y a propósito
+
+    assert not cerrada, (
+        "el recolector cerró la conexión: al checkpointer le falta guardarse "
+        "el contexto, y el primer mensaje va a fallar con 'connection is closed'"
+    )
+    assert guardador is not None
+
+
 def test_modo_invalido_avisa(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "clave-de-prueba")
     monkeypatch.setenv("MODO", "cualquier-cosa")
@@ -200,7 +340,7 @@ def test_olvidar_borra_de_verdad():
 
 
 def test_la_transmision_se_puede_leer_dos_veces():
-    """Consumirla y despues pedir .texto() no tiene que devolver vacío.
+    """Consumirla y después pedir .texto() no tiene que devolver vacío.
 
     Los pedazos llegan del modelo y no vuelven, así que si alguien recorre la
     transmisión con un for y después llama a .texto(), le tenemos que dar lo

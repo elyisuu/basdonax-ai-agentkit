@@ -7,10 +7,15 @@ son tres cosas juntas:
     2. Una memoria           → de qué vienen hablando
     3. Un modelo             → a quién le mandás las dos cosas de arriba
 
-Con LangGraph esas tres cosas se arman como un grafo. En este video el grafo
-tiene un solo nodo (llamar al modelo), que es todo lo que hace falta para
-conversar. Cuando el agente tenga herramientas, se le agregan nodos acá —
-sin tocar nada más del proyecto.
+Con LangGraph esas tres cosas se arman como un grafo. Acá el grafo es un ciclo
+de dos nodos:
+
+    modelo → ¿pidió una herramienta?
+               sí → herramientas → vuelve al modelo
+               no → listo, contesta
+
+Mientras el modelo no pida nada, el camino es el de siempre: un solo paso y
+responde. Las herramientas viven en herramientas.py.
 
 El agente no sabe si lo están usando desde la terminal, desde la web o desde
 WhatsApp. Recibe texto y devuelve texto. Esa frontera es lo que después
@@ -22,10 +27,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterator
 
-from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
-from langgraph.graph import START, MessagesState, StateGraph
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 
 from .config import Config
+from .herramientas import HERRAMIENTAS
 from .memoria import crear_memoria
 from .modelos import crear_modelo
 from .prompts import leer_prompt
@@ -111,15 +118,33 @@ class Agente:
     # -- El grafo -------------------------------------------------------------
 
     def _construir_grafo(self):
-        """Arma el grafo: un solo nodo que le habla al modelo."""
+        """Arma el grafo: el modelo, las herramientas, y la vuelta al modelo."""
+
+        # bind_tools() es lo que le avisa al modelo qué herramientas existe.
+        # Sin esto nunca las pide, por más que estén escritas.
+        modelo = self.modelo.bind_tools(HERRAMIENTAS)
 
         def nodo_modelo(estado: MessagesState) -> dict:
-            respuesta = self.modelo.invoke(self._armar_entrada(estado))
+            respuesta = modelo.invoke(self._armar_entrada(estado))
             return {"messages": [respuesta]}
 
         grafo = StateGraph(MessagesState)
         grafo.add_node("modelo", nodo_modelo)
+        grafo.add_node("herramientas", ToolNode(HERRAMIENTAS))
         grafo.add_edge(START, "modelo")
+
+        # tools_condition mira la respuesta del modelo: si pidió herramientas
+        # devuelve "tools", y si no, END. Como nuestro nodo se llama en
+        # castellano, le pasamos el mapa para traducir esa salida.
+        grafo.add_conditional_edges(
+            "modelo",
+            tools_condition,
+            {"tools": "herramientas", END: END},
+        )
+
+        # Y con el resultado en la mano, el modelo vuelve a hablar. Este es el
+        # ciclo: puede pedir varias herramientas seguidas antes de contestar.
+        grafo.add_edge("herramientas", "modelo")
 
         return grafo.compile(checkpointer=self.checkpointer)
 
@@ -129,15 +154,7 @@ class Agente:
         El prompt se lee del archivo en CADA mensaje, no una sola vez al
         arrancar: por eso podés editar prompts/sistema.md sin reiniciar.
         """
-        recientes = trim_messages(
-            estado["messages"],
-            max_tokens=self.config.memoria_mensajes,
-            token_counter=len,          # contamos mensajes, no tokens
-            strategy="last",            # nos quedamos con los más nuevos
-            start_on="human",           # la conversación arranca en el usuario
-            include_system=False,
-            allow_partial=False,
-        )
+        recientes = _recortar(estado["messages"], self.config.memoria_mensajes)
         return [self._sistema(), *recientes]
 
     def _sistema(self) -> SystemMessage:
@@ -204,9 +221,19 @@ class Agente:
                 config=self._config_hilo(conversacion),
                 stream_mode="messages",
             ):
+                # Por acá también pasa lo que devuelven las herramientas, y eso
+                # no es la respuesta: es materia prima para que el modelo la
+                # escriba. Si lo dejáramos salir, la persona vería el listado
+                # crudo del clima en pantalla y después la respuesta de verdad.
+                if isinstance(pedazo, ToolMessage):
+                    continue
+
                 # Los pedazos de LangChain se suman entre sí. Al sumarlos
                 # vamos rearmando el mensaje entero, con el conteo de tokens
                 # incluido (que en varios proveedores llega recién al final).
+                # Cuando hay herramientas el modelo habla dos veces, así que
+                # esta suma termina juntando el gasto de las dos llamadas:
+                # que es justo lo que costó la respuesta.
                 acumulado[0] = (
                     pedazo
                     if acumulado[0] is None
@@ -253,6 +280,60 @@ class Agente:
 
 
 # -- Ayudantes ----------------------------------------------------------------
+
+
+def _recortar(mensajes: list, tope: int) -> list:
+    """Los últimos mensajes de la conversación, cortando en un turno completo.
+
+    Acá había un trim_messages() de LangChain, que recorta contando mensajes
+    sueltos. Con herramientas eso se rompe, y es la trampa más cara de este
+    proyecto: una vuelta de herramienta son tres mensajes atados entre sí
+    (el modelo la pide, la herramienta contesta, el modelo responde), y los
+    proveedores exigen que estén los tres. Si el corte cae justo en el medio y
+    deja un pedido sin su resultado, la API devuelve un 400 que no explica
+    nada y aparece recién cuando la conversación se hizo larga.
+
+    Por eso no recortamos por mensaje sino por turno: agrupamos y siempre
+    entran o salen enteros. `tope` sigue siendo en mensajes (MEMORIA_MENSAJES),
+    así que el número del .env significa lo mismo que antes.
+    """
+    turnos = _partir_en_turnos(mensajes)
+
+    elegidos: list[list] = []
+    total = 0
+
+    for turno in reversed(turnos):
+        # El turno más nuevo entra siempre, aunque se pase del tope: es la
+        # pregunta que estamos respondiendo recién ahora. Dejarlo afuera por
+        # el presupuesto sería mandarle al modelo una conversación sin la
+        # consulta — o peor, partida justo por la mitad de una herramienta.
+        if elegidos and total + len(turno) > tope:
+            break
+
+        elegidos.insert(0, turno)
+        total += len(turno)
+
+    return [mensaje for turno in elegidos for mensaje in turno]
+
+
+def _partir_en_turnos(mensajes: list) -> list[list]:
+    """Agrupa la conversación en turnos.
+
+    Un turno arranca en un mensaje de la persona y se lleva todo lo que se
+    generó a partir de él: los pedidos de herramienta, sus resultados y la
+    respuesta final. Es la unidad que no se puede partir al recortar.
+    """
+    turnos: list[list] = []
+
+    for mensaje in mensajes:
+        # El `or not turnos` es para el caso raro de que la conversación no
+        # empiece con la persona: así el primer mensaje no se pierde.
+        if isinstance(mensaje, HumanMessage) or not turnos:
+            turnos.append([mensaje])
+        else:
+            turnos[-1].append(mensaje)
+
+    return turnos
 
 
 def _sumar(acumulado, pedazo):

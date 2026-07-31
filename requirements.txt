@@ -1,6 +1,6 @@
-# Las versiones estan acotadas a proposito: este repo vive en la
-# descripcion de un video y no se tiene que romper solo cuando salga
-# la proxima version mayor de LangChain.
+# Las versiones están acotadas a propósito: este repo vive en la
+# descripción de un video y no se tiene que romper solo cuando salga
+# la próxima versión mayor de LangChain.
 
 # --- LangChain + LangGraph -------------------------------------------------
 # LangGraph es lo que le da la memoria al agente y lo que después nos deja
@@ -22,5 +22,12 @@ uvicorn>=0.30,<1
 python-dotenv>=1.0,<2
 
 # --- Solo para MODO=produccion ---------------------------------------------
-# Descomentá esta línea cuando pases a Postgres:
-# langgraph-checkpoint-postgres>=2.0,<3
+# Descomentá estas dos líneas cuando pases a Postgres.
+#
+# Ojo con la versión: la serie 2.x arrastra un langgraph-checkpoint viejo que
+# se pelea con el langgraph de arriba. Tiene que ser 3.x.
+#
+# Y psycopg va con [binary] sí o sí en Windows: sin eso el import falla con
+# "no pq wrapper available" porque falta la libpq del sistema.
+# langgraph-checkpoint-postgres>=3.1,<4
+# psycopg[binary]>=3.2,<4

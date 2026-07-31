@@ -74,6 +74,20 @@ def crear_modelo(
             # Sin esto, OpenAI no informa el consumo de tokens cuando
             # la respuesta llega en vivo.
             stream_usage=True,
+            # OpenAI tiene dos endpoints y los modelos nuevos no hacen lo
+            # mismo en los dos. Por el viejo (/v1/chat/completions), pedirle
+            # herramientas a un modelo que razona —o sea, toda la familia
+            # gpt-5— devuelve un 400:
+            #
+            #   "Function tools with reasoning_effort are not supported ...
+            #    To use function tools, use /v1/responses"
+            #
+            # La otra salida que ofrece el error es apagarle el razonamiento
+            # al modelo, que es pagar por un modelo y usar otro. Así que
+            # vamos por el endpoint nuevo, que es además el que OpenAI
+            # recomienda de acá en adelante. El streaming, el conteo de
+            # tokens y el tope de salida siguen funcionando igual.
+            use_responses_api=True,
         )
 
     if proveedor == "gemini":

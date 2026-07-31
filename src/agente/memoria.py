@@ -87,16 +87,38 @@ def postgres(dsn: str) -> "BaseCheckpointSaver":
     """
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
-    except ImportError:
+    except ImportError as e:
+        # El motivo real va adentro del mensaje a propósito. Son dos fallas
+        # distintas que se ven igual desde afuera: que falte el paquete, o que
+        # esté puesto pero sin la libpq del sistema (el clásico "no pq wrapper
+        # available" en Windows). Sin el detalle, la segunda te manda a
+        # instalar algo que ya tenías.
         raise ImportError(
-            "MODO=produccion necesita el conector de Postgres, que no viene "
-            "instalado por defecto:\n\n"
-            "    pip install langgraph-checkpoint-postgres\n"
+            f"MODO=produccion necesita el conector de Postgres.\n\n"
+            f"    pip install \"langgraph-checkpoint-postgres>=3.1,<4\" \"psycopg[binary]\"\n\n"
+            f"El error de abajo dice cuál de los dos falta:\n    {type(e).__name__}: {e}"
         ) from None
 
-    # El pool queda abierto mientras viva el proceso: si lo cerráramos acá,
-    # el checkpointer dejaría de funcionar en el primer mensaje.
+    # La conexión queda abierta mientras viva el proceso: si la cerráramos
+    # acá, el checkpointer dejaría de funcionar en el primer mensaje.
     contexto = PostgresSaver.from_conn_string(dsn)
     guardador = contexto.__enter__()
     guardador.setup()
+
+    # Y esta línea es la que hace que eso sea verdad. `from_conn_string` no es
+    # un objeto cualquiera: es un generador (`with Connection.connect(...) as
+    # conn: yield ...`). Si `contexto` se queda sin referencias al salir de
+    # esta función, el recolector de basura lo destruye, y destruirlo ejecuta
+    # el cierre del `with` — o sea, **cierra la conexión**. No falla acá:
+    # falla más tarde, con un "the connection is closed" en el primer mensaje
+    # que llega, cuando ya nadie se acuerda de esta línea.
+    #
+    # Guardándolo en el propio guardador, la conexión vive exactamente lo que
+    # vive la memoria del agente.
+    #
+    # Ojo con probar esto en un script corto: si el proceso termina enseguida,
+    # el recolector no llega a actuar y parece que anda igual. Se nota recién
+    # cuando el agente queda corriendo un rato, como en el bot de Telegram.
+    guardador._contexto_abierto = contexto
+
     return guardador

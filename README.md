@@ -4,6 +4,9 @@ Un agente de IA que corre **en tu computadora**. Sin servidor, sin hosting,
 sin pagar infraestructura. Funciona con **Claude, OpenAI o Gemini** —
 elegís cuál desde una lista, sin tocar código.
 
+Además de conversar, **sabe el clima**: preguntale cómo está el tiempo en
+cualquier ciudad y sale a buscarlo. No hace falta ninguna clave más para eso.
+
 Viene con una plataforma de pruebas: una web local donde le hablás al agente,
 cambiás de modelo en caliente, editás su personalidad y ves cuántos tokens
 gastás en cada mensaje.
@@ -15,6 +18,7 @@ gastás en cada mensaje.
 │  Prompt del sistema  ← prompts/sistema.md         │
 │  Memoria             ← LangGraph (thread_id)      │
 │  Modelo              ← Claude / OpenAI / Gemini   │
+│  Herramientas        ← el clima                   │
 │      ↓                                            │
 │  El agente responde                               │
 └──────────────────────────────────────────────────┘
@@ -31,10 +35,13 @@ gastás en cada mensaje.
 5. [La memoria: cómo funciona](#la-memoria-cómo-funciona)
 6. [Modo test y modo producción](#modo-test-y-modo-producción)
 7. [El caché: gastar menos](#el-caché-gastar-menos)
-8. [Cambiar la personalidad](#cambiar-la-personalidad)
-9. [Usarlo desde tu código](#usarlo-desde-tu-código)
-10. [Todas las variables del .env](#todas-las-variables-del-env)
-11. [Preguntas que aparecen siempre](#preguntas-que-aparecen-siempre)
+8. [El clima: la primera herramienta](#el-clima-la-primera-herramienta)
+9. [Ponerlo en Telegram](#ponerlo-en-telegram)
+10. [Dejarlo corriendo en un servidor](#dejarlo-corriendo-en-un-servidor)
+11. [Cambiar la personalidad](#cambiar-la-personalidad)
+12. [Usarlo desde tu código](#usarlo-desde-tu-código)
+13. [Todas las variables del .env](#todas-las-variables-del-env)
+14. [Preguntas que aparecen siempre](#preguntas-que-aparecen-siempre)
 
 ---
 
@@ -43,8 +50,8 @@ gastás en cada mensaje.
 ### 1. Instalar
 
 ```bash
-git clone <este-repo>
-cd AgentKit
+git clone https://github.com/fcori47/basdonax-ai-agentkit
+cd basdonax-ai-agentkit
 
 python -m venv .venv
 ```
@@ -102,21 +109,25 @@ Abrí **http://localhost:8000**.
 ## Qué hay adentro
 
 ```
-AgentKit/
+basdonax-ai-agentkit/
 ├── prompts/
 │   └── sistema.md          ← la personalidad del agente (editalo)
 ├── src/agente/
 │   ├── agente.py           ← EL AGENTE. El grafo de LangGraph.
+│   ├── herramientas.py     ← lo que sabe hacer además de hablar (el clima)
 │   ├── modelos.py          ← Claude / OpenAI / Gemini
 │   ├── memoria.py          ← dónde se guardan las conversaciones
 │   ├── prompts.py          ← lee el prompt del archivo
 │   ├── respuesta.py        ← parte una respuesta larga en varios mensajes
 │   ├── config.py           ← lee el .env
-│   ├── canales/            ← Telegram y WhatsApp van acá
+│   ├── canales/
+│   │   ├── base.py         ← la forma de un canal
+│   │   └── telegram.py     ← EL BOT DE TELEGRAM
 │   └── web/                ← la plataforma de pruebas
-├── tests/                  ← 30 tests que no gastan un solo token
+├── tests/                  ← 71 tests que no gastan un solo token
 ├── chat.py                 ← hablarle desde la terminal
 ├── servidor.py             ← levantar la web
+├── bot_telegram.py         ← levantar el bot de Telegram
 ├── AGENTS.md               ← contexto para Codex, Claude Code, Cursor…
 ├── CLAUDE.md               ← apunta a AGENTS.md
 └── .env                    ← tus claves (no se sube)
@@ -242,8 +253,16 @@ MODO=produccion  # Postgres: para varios procesos atendiendo a la vez.
 ### Pasar a producción
 
 ```bash
-pip install langgraph-checkpoint-postgres
+pip install "langgraph-checkpoint-postgres>=3.1,<4" "psycopg[binary]"
 ```
+
+Dos detalles que cuestan una tarde si no te los avisan:
+
+- **La versión 3.x no es un capricho.** La 2.x se lleva por delante el
+  `langgraph` que usa el resto del proyecto. `pip` te deja instalarla igual y
+  lo avisa en un renglón perdido entre otros veinte.
+- **`psycopg[binary]`, con los corchetes.** Sin eso, en Windows falla con
+  *"no pq wrapper available"* aunque el paquete figure instalado.
 
 En el `.env`:
 
@@ -303,6 +322,174 @@ CACHE=true    # en el .env — viene activado, dejalo así
 
 ---
 
+## El clima: la primera herramienta
+
+Hasta acá el agente solo conversaba: contestaba con lo que sabía de antes. Una
+**herramienta** es una función que puede usar cuando la necesita, y con eso
+deja de adivinar y sale a buscar el dato.
+
+Probá:
+
+```
+¿qué clima hace en Rosario?
+¿me llevo campera a Mar del Plata?
+¿está lloviendo en Madrid?
+```
+
+Fijate que **vos no le decís que use la herramienta**. El modelo lee la
+pregunta, se da cuenta de que necesita el clima, la pide, recibe el resultado
+y recién ahí te contesta. Si le preguntás cualquier otra cosa, ni la toca.
+
+### No hay que pagar ni registrarse
+
+Usa [Open-Meteo](https://open-meteo.com): gratis, sin clave de API y sin
+tarjeta para uso no comercial. Es a propósito — arrancar este repo no tiene
+que depender de sacar una credencial más. Lo único que seguís pagando es el
+modelo, como siempre.
+
+### Lo que sí cuesta un poco más
+
+Una pregunta con herramienta son **dos llamadas al modelo**, no una: la
+primera para que pida el clima, la segunda para que te lo cuente. En la barra
+vas a ver los tokens de las dos sumados. Es el precio de que el dato sea real.
+
+### Si la ciudad no existe o se cae internet
+
+Te lo dice y la charla sigue. La herramienta nunca voltea la conversación:
+cuando algo falla, le devuelve el problema al modelo y el modelo te lo
+explica.
+
+---
+
+## Ponerlo en Telegram
+
+Hasta acá el agente vivía en tu navegador. Con esto lo tenés en el teléfono, y
+**sin pagar hosting**: corre en tu computadora igual que todo lo demás.
+
+### Los tres pasos
+
+**1. Pedile un bot a Telegram.** Abrí [@BotFather](https://t.me/BotFather),
+mandale `/newbot` y seguile la conversación. Al final te da un token, que es
+una tira larga tipo `8983476848:AAG4j4...`.
+
+**2. Pegalo en el `.env`:**
+
+```bash
+TELEGRAM_TOKEN=el-que-te-dio-BotFather
+```
+
+**3. Arrancalo:**
+
+```bash
+python bot_telegram.py
+```
+
+Buscá tu bot por nombre en Telegram, escribile, y listo.
+
+### Por qué no hace falta un servidor
+
+Telegram se puede escuchar de dos formas. Este bot usa la primera:
+
+|  | Cómo funciona | ¿Necesita URL pública? |
+|---|---|---|
+| **Polling** ← esta | Tu programa le pregunta a Telegram si hay algo nuevo | **No** |
+| **Webhook** | Telegram le pega a una URL tuya | Sí, con HTTPS |
+
+Por eso Telegram viene antes que WhatsApp: WhatsApp obliga a webhook, y ahí sí
+necesitás un servidor de verdad con dominio y certificado.
+
+**Mientras la ventana esté abierta, el bot contesta.** Si la cerrás, deja de
+contestar — y los mensajes que le lleguen mientras tanto los va a atender
+cuando lo vuelvas a levantar (Telegram los guarda 24 horas).
+
+¿Querés que conteste siempre, sin tener la compu prendida? Está en
+[Dejarlo corriendo en un servidor](#dejarlo-corriendo-en-un-servidor).
+
+### Cada persona, su propia conversación
+
+Acá está lo que hace que esto sirva de verdad: el `chat_id` de Telegram es el
+`thread_id` de LangGraph.
+
+```
+vos          → chat_id 555  → tu conversación
+tu hermana   → chat_id 888  → la de ella, aparte
+```
+
+**El mismo bot atiende a mil personas sin mezclar nada.** No hay que hacer
+nada especial: es la misma línea de siempre, con el chat de cada uno como
+`conversacion`.
+
+Eso sí, si son muchos a la vez conviene `MODO=produccion` (Postgres): SQLite
+es un archivo y no le gusta que varios procesos le escriban al mismo tiempo.
+
+### Cosas que ya están resueltas
+
+- **Contesta en varios mensajitos**, no en un ladrillo (`partir_respuesta`).
+- **No contesta dos veces lo mismo.** Telegram reenvía cuando duda.
+- **Muestra "escribiendo…"** mientras el modelo piensa.
+- **Las fotos y los audios los deja pasar** sin trabarse: el agente todavía no
+  sabe leerlos.
+- **Un error con una persona no voltea el bot** ni deja sin respuesta al resto.
+
+---
+
+## Dejarlo corriendo en un servidor
+
+Hasta acá el bot vivía mientras tu computadora estuviera prendida. Para que
+conteste siempre —desde el gimnasio, de viaje, a las 3 de la mañana— tiene que
+correr en un servidor.
+
+**La buena noticia: no hace falta dominio, ni HTTPS, ni abrir un puerto.** El
+bot usa polling, así que sale él a buscar los mensajes. Alcanza con un
+contenedor prendido.
+
+El `Dockerfile` del repo hace justamente eso: **no levanta la plataforma de
+pruebas**, corre `bot_telegram.py` y nada más.
+
+```bash
+docker build -t agentkit-bot .
+docker run -d --env-file .env --name agentkit-bot agentkit-bot
+```
+
+### Con Coolify (o cualquier PaaS que lea un Dockerfile)
+
+1. Subí el código a un repositorio (privado está bien).
+2. Creá una aplicación de tipo **Dockerfile** apuntando a ese repo.
+3. **No le pongas dominio.** El bot no atiende visitas: no expone puerto y
+   ningún dominio le va a responder. Si el panel te asignó uno solo, borralo.
+4. Cargá las variables en el panel — **el `.env` no se sube al repo**:
+
+   ```
+   PROVEEDOR · OPENAI_API_KEY · MODELO_OPENAI · TELEGRAM_TOKEN
+   MODO=produccion · POSTGRES_DSN
+   CACHE · MAX_TOKENS · MEMORIA_MENSAJES · PROMPT_SISTEMA
+   ```
+
+5. Desplegá.
+
+### Dos cosas para no comerte
+
+**Una sola instancia a la vez.** Si el bot queda corriendo en el servidor *y*
+en tu computadora, los dos le van a preguntar a Telegram por los mismos
+mensajes y se los van a repartir al azar: la mitad de las respuestas van a
+salir de una máquina y la otra mitad de la otra. Apagá el local antes.
+
+**`MODO=produccion`, o vas a perder las conversaciones.** En un contenedor,
+SQLite vive en el disco del contenedor, y ese disco se borra en cada deploy.
+Con Postgres la memoria sobrevive a los despliegues.
+
+### Cómo actualizarlo después
+
+```bash
+git push
+```
+
+Y redesplegás desde el panel. El código nuevo entra en el próximo deploy; la
+conversación de cada persona sigue intacta, porque vive en Postgres y no en
+el contenedor.
+
+---
+
 ## Cambiar la personalidad
 
 Editá **`prompts/sistema.md`**, guardá, y el próximo mensaje ya sale distinto.
@@ -354,9 +541,21 @@ pisarían los datos.
 
 ### Agregar herramientas
 
-Este agente conversa: todavía no busca en internet ni lee tus archivos.
-Cuando quieras que haga cosas, se le agregan nodos al grafo en
-`src/agente/agente.py`. El resto del proyecto no se toca.
+Las herramientas viven en **`src/agente/herramientas.py`**. Agregar una es
+escribir una función y sumarla a la lista `HERRAMIENTAS`: el grafo ya está
+armado para usarlas, así que no se toca nada más.
+
+```python
+@tool
+def clima(lugar: str) -> str:
+    """Dice el clima que hace ahora mismo en una ciudad."""
+    ...
+
+HERRAMIENTAS = [clima]
+```
+
+**Ese docstring no es un comentario: es lo que lee el modelo** para decidir si
+la herramienta le sirve. Si está mal escrito, la herramienta no se usa nunca.
 
 ---
 
@@ -378,6 +577,7 @@ Cuando quieras que haga cosas, se le agregan nodos al grafo en
 | `MAX_TOKENS` | `4096` | Cuánto puede escribir el agente por respuesta |
 | `MEMORIA_MENSAJES` | `20` | Cuántos mensajes recuerda |
 | `PROMPT_SISTEMA` | `prompts/sistema.md` | Qué archivo usar de personalidad |
+| `TELEGRAM_TOKEN` | — | El token de @BotFather, para `bot_telegram.py` |
 
 ---
 
