@@ -45,10 +45,14 @@ Lo que importa acá es qué hace cada uno:
 | `respuesta.py` | Parte una respuesta larga en varios mensajes |
 | `consola.py` | Que la terminal de Windows no rompa con las tildes |
 | `config.py` | Lee el `.env`. Única fuente de configuración. |
-| `canales/base.py` | La forma de un canal. WhatsApp viene después. |
+| `canales/base.py` | La forma de un canal |
 | `canales/telegram.py` | **El bot de Telegram.** Polling, corre en tu máquina. |
-| `../Dockerfile` | Empaqueta **solo el bot** (`bot_telegram.py`), no la web |
-| `web/` | La plataforma de pruebas (FastAPI + un solo HTML) |
+| `canales/chatwoot.py` | **El canal de WhatsApp**, con Chatwoot en el medio |
+| `canales/buffer.py` | Junta la ráfaga de mensajes cortos y contesta una vez |
+| `web/webhook.py` | **El servidor que atiende WhatsApp.** Es lo que corre en producción. |
+| `../webhook_chatwoot.py` | El punto de entrada del webhook |
+| `../Dockerfile` | Empaqueta el **webhook** (`webhook_chatwoot.py`); el bot de Telegram queda adentro por si lo querés correr |
+| `web/app.py` | La plataforma de pruebas (FastAPI + un solo HTML) — **no es** el webhook |
 
 ---
 
@@ -120,10 +124,15 @@ La instalación paso a paso está en el
 desincronicen. Lo que hace falta saber:
 
 ```bash
-python servidor.py     # la plataforma de pruebas, en http://localhost:8000
-python chat.py         # lo mismo pero por terminal
-python bot_telegram.py # el agente atendiendo en Telegram (polling, local)
+python servidor.py         # la plataforma de pruebas, en http://localhost:8000
+python chat.py             # lo mismo pero por terminal
+python bot_telegram.py     # el agente atendiendo en Telegram (polling, local)
+python webhook_chatwoot.py # el agente atendiendo WhatsApp (necesita servidor)
 ```
+
+El último es el único que **no** sirve en tu máquina: es un webhook, así que
+Chatwoot tiene que poder entrar. Levantalo local solo para confirmar que
+arranca (`GET /salud`); para probarlo de verdad tiene que estar desplegado.
 
 El bot se llama `bot_telegram.py` y no `telegram.py` a propósito: un módulo
 llamado `telegram` en la raíz taparía la librería del mismo nombre si algún
@@ -198,10 +207,14 @@ Cosas que parecen bugs y no lo son, o que cuestan de encontrar:
   el bot se queda trabado ahí sin atender a nadie más.
 - **El `chat_id` va como texto** al usarse de `thread_id`. Un `555` y un
   `"555"` son dos conversaciones distintas para LangGraph.
-- **El bot no expone puerto y eso confunde a los PaaS.** Al desplegarlo, el
-  panel le asigna un dominio solo y después lo marca como *unhealthy* porque
-  nadie contesta ahí. No está roto: con polling nadie entra al bot, sale él.
-  Hay que borrarle el dominio y dejar el health check apagado.
+- **El bot de Telegram no expone puerto y eso confunde a los PaaS.** Al
+  desplegarlo, el panel le asigna un dominio solo y después lo marca como
+  *unhealthy* porque nadie contesta ahí. No está roto: con polling nadie
+  entra al bot, sale él. Hay que borrarle el dominio y dejar el health check
+  apagado. **Ojo que con el webhook de WhatsApp es al revés**: ese sí escucha
+  en el 8000, sí necesita dominio y sí tiene que tener el health check
+  prendido apuntando a `/salud`. Son dos formas opuestas de desplegar el
+  mismo repo, y el Dockerfile hoy trae la segunda.
 - **Dos instancias del bot se roban los mensajes.** Telegram le entrega cada
   mensaje a quien lo pide primero, así que si corren el servidor y la máquina
   local a la vez, las respuestas salen la mitad de cada lado. Es la falla más
@@ -242,7 +255,6 @@ Cosas que parecen bugs y no lo son, o que cuestan de encontrar:
 No lo agregues salvo que te lo pidan: son los próximos videos de la serie.
 
 - Más herramientas (hay una sola: el clima)
-- WhatsApp (Telegram ya está: `canales/telegram.py`)
 - RAG / base de conocimiento
 - Autenticación en la plataforma de pruebas (es local, un solo usuario)
 - Varias conversaciones en paralelo en la web (usa un `thread_id` fijo)
@@ -342,26 +354,43 @@ imposible después.
 uno sin dominio ni puertos abiertos. Sirve igual con `MODO=test` (SQLite) que
 con `MODO=produccion` (Postgres): el agente no cambia.
 
-**Video 3 — WhatsApp.** `canales/whatsapp.py`, y ahí entra todo lo que
-separa un bot de demo de uno que atiende clientes:
+**Video 3 — WhatsApp. ✅ Hecho, con Chatwoot en el medio.**
 
-| Pieza | Dónde va | Por qué |
+El agente **no le habla a Meta**: le habla a Chatwoot, que ya está conectado
+a WhatsApp. Eso cambia el diseño respecto de lo que decía este archivo antes,
+y para mejor: la mitad de las piezas las resuelve Chatwoot.
+
+    persona → WhatsApp → Meta → Chatwoot → webhook → agente
+                                   ↑                    │
+                                   └──── API REST ──────┘
+
+| Pieza | Dónde quedó | Cómo se resolvió |
 |---|---|---|
-| Verificar la firma de Meta (HMAC-SHA256 con el App Secret) | `canales/whatsapp.py` | Sin esto cualquiera que sepa la URL le escribe al agente. **No es opcional.** |
-| Responder 200 en menos de 5s y procesar aparte | `canales/whatsapp.py` | Meta reintenta y el agente contesta de más |
-| Descartar el mensaje repetido por id | `Canal.deberia_responder()` | Meta reenvía ante la duda |
-| Juntar la ráfaga de mensajes (Redis) | `buffer.py` (nuevo) | La gente manda 3 mensajes cortos seguidos; hay que contestar una vez |
-| Partir la respuesta en varios globos | `respuesta.partir_respuesta()` | **Ya está hecho** |
-| Traspaso a una persona | `Canal.deberia_responder()` | Etiqueta en Chatwoot, o un flag propio. Es *el* diferencial |
-| Apagar el bot por contacto | `Canal.deberia_responder()` | |
-| Chatwoot **opcional** | `canales/chatwoot.py` | Si hay `CHATWOOT_URL` se usa; si no, el canal habla directo |
-| Ventana de 24h y plantillas | `canales/whatsapp.py` | Fuera de plazo, Meta rechaza el envío |
+| Autenticar quién llama al webhook | `web/webhook.py` | Chatwoot **no firma** sus webhooks (no hay HMAC como en Meta): la seguridad es un token secreto en la URL, `CHATWOOT_WEBHOOK_TOKEN` |
+| Responder 200 rápido y procesar aparte | `web/webhook.py` | El 200 sale antes de pensar la respuesta; si no, Chatwoot reintenta y el agente contesta de más |
+| Descartar el mensaje repetido por id | `Chatwoot.deberia_responder()` | Cola de los últimos 1.000 ids |
+| **Que el agente no se conteste a sí mismo** | `Chatwoot.deberia_responder()` | Solo se atiende `message_type == "incoming"`. Sin esto es un ida y vuelta infinito que gasta tokens en cada vuelta |
+| Juntar la ráfaga de mensajes | `canales/buffer.py` | En memoria, no Redis: hay un solo proceso atendiendo. `BUFFER_SEGUNDOS` |
+| Partir la respuesta en varios globos | `respuesta.partir_respuesta()` | Ya estaba |
+| Traspaso a una persona | `Chatwoot.deberia_responder()` | La etiqueta `CHATWOOT_ETIQUETA_HUMANO` apaga al bot en esa conversación, con un clic desde la bandeja |
+| Notas privadas | `Chatwoot.deberia_responder()` | Son para el equipo: el agente no las contesta |
+| Ventana de 24h y plantillas | Lo maneja Chatwoot | Por eso no está acá |
+
+**El `conversacion` (thread_id) es el id de conversación de Chatwoot.** Un
+hilo en la bandeja es un hilo de memoria del agente, y es también lo que se
+necesita para contestar: sirve para las dos cosas.
 
 **Decisiones ya tomadas** (no volver a discutirlas):
 
 - **Un solo repo.** Cada canal es un archivo nuevo; el núcleo no se toca.
-- **Chatwoot es opcional**, no obligatorio.
-- **Redis** para juntar los mensajes, no Postgres.
+  Se cumplió: `agente.py` no se tocó para que atienda WhatsApp.
+- **Chatwoot es opcional**, no obligatorio. El agente sigue andando por
+  terminal, web y Telegram sin él.
+- ~~**Redis** para juntar los mensajes~~ → **quedó en memoria**
+  (`canales/buffer.py`). Redis resolvía compartir la ráfaga entre varios
+  procesos, y hoy hay uno solo atendiendo. Sumar una base entera para eso era
+  pagar un problema que todavía no tenemos. Cuando se escale a varios
+  procesos se cambia esa clase y el webhook ni se entera.
 - **`MODO=test` responde y listo.** Todo lo de arriba corre solo en
   `MODO=produccion`.
 
