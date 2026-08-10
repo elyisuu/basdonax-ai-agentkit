@@ -37,11 +37,12 @@ gastás en cada mensaje.
 7. [El caché: gastar menos](#el-caché-gastar-menos)
 8. [El clima: la primera herramienta](#el-clima-la-primera-herramienta)
 9. [Ponerlo en Telegram](#ponerlo-en-telegram)
-10. [Dejarlo corriendo en un servidor](#dejarlo-corriendo-en-un-servidor)
-11. [Cambiar la personalidad](#cambiar-la-personalidad)
-12. [Usarlo desde tu código](#usarlo-desde-tu-código)
-13. [Todas las variables del .env](#todas-las-variables-del-env)
-14. [Preguntas que aparecen siempre](#preguntas-que-aparecen-siempre)
+10. [Ponerlo en WhatsApp](#ponerlo-en-whatsapp)
+11. [Dejarlo corriendo en un servidor](#dejarlo-corriendo-en-un-servidor)
+12. [Cambiar la personalidad](#cambiar-la-personalidad)
+13. [Usarlo desde tu código](#usarlo-desde-tu-código)
+14. [Todas las variables del .env](#todas-las-variables-del-env)
+15. [Preguntas que aparecen siempre](#preguntas-que-aparecen-siempre)
 
 ---
 
@@ -122,12 +123,17 @@ basdonax-ai-agentkit/
 │   ├── config.py           ← lee el .env
 │   ├── canales/
 │   │   ├── base.py         ← la forma de un canal
-│   │   └── telegram.py     ← EL BOT DE TELEGRAM
-│   └── web/                ← la plataforma de pruebas
-├── tests/                  ← 71 tests que no gastan un solo token
+│   │   ├── telegram.py     ← EL BOT DE TELEGRAM
+│   │   ├── chatwoot.py     ← EL CANAL DE WHATSAPP
+│   │   └── buffer.py       ← junta los mensajes cortos seguidos
+│   └── web/
+│       ├── app.py          ← la plataforma de pruebas
+│       └── webhook.py      ← el servidor que atiende WhatsApp
+├── tests/                  ← 103 tests que no gastan un solo token
 ├── chat.py                 ← hablarle desde la terminal
 ├── servidor.py             ← levantar la web
 ├── bot_telegram.py         ← levantar el bot de Telegram
+├── webhook_chatwoot.py     ← levantar el webhook de WhatsApp
 ├── AGENTS.md               ← contexto para Codex, Claude Code, Cursor…
 ├── CLAUDE.md               ← apunta a AGENTS.md
 └── .env                    ← tus claves (no se sube)
@@ -433,50 +439,194 @@ es un archivo y no le gusta que varios procesos le escriban al mismo tiempo.
 
 ---
 
+## Ponerlo en WhatsApp
+
+Acá el agente deja de ser una demo y pasa a atender clientes.
+
+**El agente no le habla a Meta: le habla a Chatwoot.** Esa es la decisión que
+hace que todo lo demás sea más fácil.
+
+```
+persona → WhatsApp → Meta → Chatwoot → tu webhook → el agente
+                               ↑                        │
+                               └──── la respuesta ──────┘
+```
+
+Qué te ahorra tener Chatwoot en el medio:
+
+- **No necesitás el token de WhatsApp, ni el App Secret, ni verificar la firma
+  HMAC de Meta.** Eso lo hace Chatwoot cuando conectás el inbox.
+- Te queda la **bandeja de entrada** con el historial y el buscador.
+- Una persona puede **meterse en la conversación** y seguirla a mano.
+- El mismo agente atiende Instagram o el widget de la web sin tocar una línea:
+  para el webhook, todo entra igual.
+
+Lo que sí necesitás: **un servidor con dominio y HTTPS**. WhatsApp va por
+webhook, así que alguien tiene que poder entrar. Esto no corre en tu compu.
+
+### 1. Conectá WhatsApp a Chatwoot
+
+En Chatwoot, **Configuración → Bandejas de entrada → Agregar** y elegí
+WhatsApp. Seguí los pasos con los datos de tu app de Meta.
+
+Cuando termines, mandate un mensaje al número desde tu teléfono: **si aparece
+en la bandeja, esta parte ya está.** No sigas hasta que eso funcione — todo lo
+demás depende de que Meta le esté entregando a Chatwoot.
+
+### 2. Completá el `.env`
+
+```bash
+CHATWOOT_URL=https://tu-chatwoot.com
+CHATWOOT_TOKEN=el-token-de-tu-perfil
+CHATWOOT_CUENTA_ID=1
+CHATWOOT_WEBHOOK_TOKEN=un-secreto-largo-y-al-azar
+```
+
+- **El token** sale de tu foto de perfil → *Configuración del perfil* → abajo
+  de todo, **Token de acceso a la API**.
+- **La cuenta** es el número que ves en la URL: `/app/accounts/1/...`
+- **El secreto del webhook** generalo, no lo escribas a mano:
+
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(24))"
+  ```
+
+### 3. Desplegalo
+
+Está en [Dejarlo corriendo en un servidor](#dejarlo-corriendo-en-un-servidor).
+Cuando termine, entrá a `https://tu-dominio.com/salud`. Tiene que contestar:
+
+```json
+{"estado":"ok","proveedor":"openai","modelo":"...","memoria":"postgres"}
+```
+
+**Si eso no contesta, no sigas**: el webhook que vas a cargar en el paso 4 no
+va a tener a quién pegarle.
+
+### 4. El webhook, en Chatwoot
+
+En **Configuración → Integraciones → Webhooks → Agregar webhook**:
+
+| Campo | Qué va |
+|---|---|
+| URL | `https://tu-dominio.com/chatwoot/<CHATWOOT_WEBHOOK_TOKEN>` |
+| Eventos | **Solo `message_created`** |
+
+Dos avisos que valen el rato que ahorran:
+
+**Marcá únicamente `message_created`.** Si tildás todos, tu servidor recibe
+cada cambio de estado y cada actualización de contacto para nada.
+
+**El token va pegado en la URL, no en un campo aparte.** Chatwoot no firma sus
+webhooks —no tiene un secreto compartido como Meta—, así que esa tira en la
+dirección es lo único que separa un mensaje de verdad de cualquiera que
+descubra tu dominio. Si la URL no lo lleva, el agente contesta **401** y no
+pasa nada.
+
+### 5. La etiqueta `humano`
+
+En **Configuración → Etiquetas → Agregar etiqueta**, creá una que se llame
+exactamente **`humano`** (o lo que hayas puesto en `CHATWOOT_ETIQUETA_HUMANO`).
+
+Para qué sirve: se la ponés a una conversación desde la bandeja y **el agente
+se calla en ese chat**. Es el traspaso a una persona, y es *el* diferencial de
+tener Chatwoot — se hace con un clic, sin tocar el servidor ni reiniciar nada.
+Se la sacás y el bot vuelve.
+
+### Probalo
+
+Escribile al número desde tu teléfono. Vas a ver la respuesta en WhatsApp y en
+la bandeja de Chatwoot.
+
+Si no contesta, mirá los logs del contenedor: cada mensaje que entra deja una
+línea con el número de conversación y el texto.
+
+### Lo que ya está resuelto
+
+- **El agente no se contesta a sí mismo.** Cada respuesta suya vuelve por el
+  webhook como un evento nuevo; solo se atienden los `incoming`. Sin ese
+  filtro es un ida y vuelta infinito que gasta tokens en cada vuelta.
+- **Junta los mensajes cortados.** "hola" / "una consulta" / "por el precio"
+  es una sola respuesta, no tres (`BUFFER_SEGUNDOS`).
+- **Contesta 200 al toque** y piensa después. Si tardara lo que tarda el
+  modelo, Chatwoot daría el webhook por fallado y lo reintentaría — y el
+  agente contestaría dos veces.
+- **No repite** si Chatwoot reintenta el mismo mensaje.
+- **No contesta las notas privadas**: esas son del equipo.
+- **Cada conversación tiene su memoria**, con el id de Chatwoot como
+  `thread_id`.
+
+---
+
 ## Dejarlo corriendo en un servidor
 
-Hasta acá el bot vivía mientras tu computadora estuviera prendida. Para que
+Hasta acá el agente vivía mientras tu computadora estuviera prendida. Para que
 conteste siempre —desde el gimnasio, de viaje, a las 3 de la mañana— tiene que
 correr en un servidor.
 
-**La buena noticia: no hace falta dominio, ni HTTPS, ni abrir un puerto.** El
-bot usa polling, así que sale él a buscar los mensajes. Alcanza con un
-contenedor prendido.
+**Antes que nada: hay dos formas de desplegar este repo y son opuestas.** Es
+lo que más confunde, así que va en una tabla:
 
-El `Dockerfile` del repo hace justamente eso: **no levanta la plataforma de
-pruebas**, corre `bot_telegram.py` y nada más.
+|  | WhatsApp (`webhook_chatwoot.py`) | Telegram (`bot_telegram.py`) |
+|---|---|---|
+| Cómo llegan los mensajes | Chatwoot le pega a tu URL | El bot sale a buscarlos |
+| ¿Dominio? | **Sí, obligatorio** | **No, y si te asignan uno, borralo** |
+| ¿Puerto? | El 8000 | Ninguno |
+| Health check | Prendido, en `/salud` | **Apagado** |
+
+**El `Dockerfile` del repo corre el webhook de WhatsApp**, que es el caso que
+necesita servidor de verdad. Si querés desplegar el bot de Telegram, cambiale
+la última línea a `CMD ["python", "bot_telegram.py"]` y seguí la columna de la
+derecha. En los dos casos: **no levanta la plataforma de pruebas.**
 
 ```bash
-docker build -t agentkit-bot .
-docker run -d --env-file .env --name agentkit-bot agentkit-bot
+docker build -t agente .
+docker run -d --env-file .env -p 8000:8000 --name agente agente
 ```
 
 ### Con Coolify (o cualquier PaaS que lea un Dockerfile)
 
 1. Subí el código a un repositorio (privado está bien).
 2. Creá una aplicación de tipo **Dockerfile** apuntando a ese repo.
-3. **No le pongas dominio.** El bot no atiende visitas: no expone puerto y
-   ningún dominio le va a responder. Si el panel te asignó uno solo, borralo.
-4. Cargá las variables en el panel — **el `.env` no se sube al repo**:
+3. **Ponele el dominio** que va a usar el webhook, y dejá el puerto en `8000`.
+   (Si desplegás el bot de Telegram, este paso es al revés: sacale el dominio.)
+4. **Health check en `/salud`**, con el puerto 8000.
+5. Cargá las variables en el panel — **el `.env` no se sube al repo**:
 
    ```
-   PROVEEDOR · OPENAI_API_KEY · MODELO_OPENAI · TELEGRAM_TOKEN
+   PROVEEDOR · OPENAI_API_KEY · MODELO_OPENAI
    MODO=produccion · POSTGRES_DSN
    CACHE · MAX_TOKENS · MEMORIA_MENSAJES · PROMPT_SISTEMA
+   CHATWOOT_URL · CHATWOOT_TOKEN · CHATWOOT_CUENTA_ID
+   CHATWOOT_WEBHOOK_TOKEN · CHATWOOT_ETIQUETA_HUMANO · BUFFER_SEGUNDOS
    ```
 
-5. Desplegá.
+6. Desplegá, y entrá a `https://tu-dominio.com/salud` para confirmar.
 
-### Dos cosas para no comerte
+**Si la base de datos está en el mismo servidor**, usá el nombre interno del
+contenedor en el `POSTGRES_DSN` en vez de la IP pública: es más rápido y no
+sale a internet para volver a entrar.
 
-**Una sola instancia a la vez.** Si el bot queda corriendo en el servidor *y*
-en tu computadora, los dos le van a preguntar a Telegram por los mismos
-mensajes y se los van a repartir al azar: la mitad de las respuestas van a
-salir de una máquina y la otra mitad de la otra. Apagá el local antes.
+### Tres cosas para no comerte
 
 **`MODO=produccion`, o vas a perder las conversaciones.** En un contenedor,
 SQLite vive en el disco del contenedor, y ese disco se borra en cada deploy.
 Con Postgres la memoria sobrevive a los despliegues.
+
+**Si el panel te dice que el contenedor está *unhealthy* pero arranca bien,
+es `curl`.** El health check de un PaaS le pega a la URL **desde adentro** del
+contenedor, con `curl` o `wget`, y las imágenes `slim` de Python no traen
+ninguno de los dos. El contenedor levanta, atiende perfecto, y el panel lo da
+de baja igual con un *"New container is not healthy, rolling back"* que no
+menciona a `curl` por ningún lado. El `Dockerfile` de este repo ya lo instala;
+lo aclaramos porque se pierde un rato largo buscando el error en otro lado.
+
+**Una sola instancia a la vez, si usás Telegram.** Si el bot queda corriendo
+en el servidor *y* en tu computadora, los dos le van a preguntar a Telegram
+por los mismos mensajes y se los van a repartir al azar: la mitad de las
+respuestas van a salir de una máquina y la otra mitad de la otra. Apagá el
+local antes. (Con WhatsApp esto no pasa: los mensajes llegan a una URL, y esa
+URL es una sola.)
 
 ### Cómo actualizarlo después
 
@@ -578,6 +728,21 @@ la herramienta le sirve. Si está mal escrito, la herramienta no se usa nunca.
 | `MEMORIA_MENSAJES` | `20` | Cuántos mensajes recuerda |
 | `PROMPT_SISTEMA` | `prompts/sistema.md` | Qué archivo usar de personalidad |
 | `TELEGRAM_TOKEN` | — | El token de @BotFather, para `bot_telegram.py` |
+
+Y estas, solo si vas a atender WhatsApp con `webhook_chatwoot.py`:
+
+| Variable | Por defecto | Qué hace |
+|---|---|---|
+| `CHATWOOT_URL` | — | La dirección de tu Chatwoot, con `https://` |
+| `CHATWOOT_TOKEN` | — | El token de tu perfil de Chatwoot |
+| `CHATWOOT_CUENTA_ID` | `1` | El número que ves en la URL de Chatwoot |
+| `CHATWOOT_WEBHOOK_TOKEN` | — | El secreto que va en la URL del webhook |
+| `CHATWOOT_ETIQUETA_HUMANO` | `humano` | La etiqueta que apaga al bot en una conversación |
+| `BUFFER_SEGUNDOS` | `8` | Cuánto espera juntando la ráfaga antes de contestar |
+| `PUERTO` | `8000` | Dónde escucha el webhook |
+
+**No hace falta ninguna variable de Meta** (`WHATSAPP_TOKEN`, `APP_SECRET` y
+compañía): el agente le habla a Chatwoot, y Chatwoot es el que le habla a Meta.
 
 ---
 

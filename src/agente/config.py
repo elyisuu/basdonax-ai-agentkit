@@ -54,6 +54,20 @@ class Config:
     # de Telegram; el resto del proyecto ni lo mira.
     telegram_token: str = ""
 
+    # -- Chatwoot: solo lo mira el webhook (web/webhook.py) ------------------
+    chatwoot_url: str = ""
+    chatwoot_token: str = ""
+    chatwoot_cuenta_id: str = "1"
+    # La etiqueta que apaga al bot en una conversación: el traspaso a una
+    # persona. Se pone con un clic desde la bandeja de Chatwoot.
+    chatwoot_etiqueta_humano: str = "humano"
+    # El secreto que va en la URL del webhook. Chatwoot no firma sus pedidos,
+    # así que esto es lo único que separa un mensaje de verdad de cualquiera
+    # que haya descubierto el dominio.
+    chatwoot_webhook_token: str = ""
+    # Cuánto espera juntando la ráfaga antes de contestar (ver buffer.py).
+    buffer_segundos: int = 8
+
     @classmethod
     def desde_entorno(
         cls, proveedor: str | None = None, modelo: str | None = None
@@ -104,6 +118,16 @@ class Config:
             sqlite_ruta=os.getenv("SQLITE_RUTA", "datos/conversaciones.db"),
             postgres_dsn=(os.getenv("POSTGRES_DSN") or "").strip(),
             telegram_token=(os.getenv("TELEGRAM_TOKEN") or "").strip(),
+            chatwoot_url=(os.getenv("CHATWOOT_URL") or "").strip(),
+            chatwoot_token=(os.getenv("CHATWOOT_TOKEN") or "").strip(),
+            chatwoot_cuenta_id=(os.getenv("CHATWOOT_CUENTA_ID") or "1").strip(),
+            chatwoot_etiqueta_humano=(
+                os.getenv("CHATWOOT_ETIQUETA_HUMANO") or "humano"
+            ).strip(),
+            chatwoot_webhook_token=(
+                os.getenv("CHATWOOT_WEBHOOK_TOKEN") or ""
+            ).strip(),
+            buffer_segundos=_entero("BUFFER_SEGUNDOS", 8),
         )
 
 
