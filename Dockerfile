@@ -1,12 +1,10 @@
-# El agente atendiendo WhatsApp, en un servidor.
+# El agente atendiendo Telegram, en un servidor.
 #
-# Corre `webhook_chatwoot.py`: un servidor que espera a que Chatwoot le pegue
-# cuando llega un mensaje. A diferencia del bot de Telegram (que sale a buscar
-# los mensajes y no abre ningún puerto), este SÍ escucha en un puerto y
-# necesita dominio con HTTPS, porque acá entra alguien de afuera.
+# Corre `bot_telegram.py`: sale a buscar los mensajes (polling) y no abre
+# ningún puerto, así que no necesita dominio ni HTTPS.
 #
-# El bot de Telegram también queda adentro de la imagen: si algún día querés
-# correr ese en vez de este, se cambia el CMD y nada más.
+# El webhook de WhatsApp (`webhook_chatwoot.py`) también queda adentro de la
+# imagen: el día que tengas Chatwoot configurado, se cambia el CMD y nada más.
 #
 # Toda la configuración entra por variables de entorno. El .env no se copia
 # acá adentro: en el servidor las variables las pone Coolify.
@@ -55,4 +53,4 @@ USER agente
 ENV PUERTO=8000
 EXPOSE 8000
 
-CMD ["python", "webhook_chatwoot.py"]
+CMD ["python", "bot_telegram.py"]
