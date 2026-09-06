@@ -56,6 +56,23 @@ def crear_modelo(
             max_tokens=max_tokens,
             timeout=120,
             stop=None,
+            # Los modelos de la familia Claude 5 piensan (thinking adaptativo)
+            # por default, y ese pensamiento queda firmado y atado a la lista
+            # de herramientas del momento en que se generó. El día que
+            # HERRAMIENTAS cambia (agregás o sacás una), la próxima vez que
+            # se relee una conversación vieja el proveedor rechaza el pedido
+            # ENTERO con un 400 ("Invalid signature... The tools list differs
+            # from the one this block was created with"), y la conversación
+            # queda rota para siempre porque el bloque inválido sigue
+            # guardado en la memoria y se reenvía en cada mensaje nuevo.
+            # `drop_block` es el arreglo que sugiere el propio error de
+            # Anthropic: en vez de romper el pedido, tira el bloque viejo y
+            # sigue. Necesita el beta de abajo para que el server lo respete.
+            thinking={
+                "type": "adaptive",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            },
+            betas=["thinking-binding-controls-2026-08-01"],
         )
 
     if proveedor == "openai":

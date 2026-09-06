@@ -37,6 +37,22 @@ def test_modelo_desconocido_devuelve_none():
     assert _tope_de(LISTA, "un-modelo-que-no-existe") is None
 
 
+def test_claude_pide_que_se_tiren_los_bloques_de_pensamiento_viejos(monkeypatch):
+    """Sin esto, cambiar HERRAMIENTAS rompe para siempre cualquier
+    conversación vieja: Anthropic firma el `thinking` contra la lista de
+    herramientas del momento, y al cambiar esa lista el próximo mensaje
+    devuelve un 400 ("Invalid signature... tools list differs") en vez de
+    contestar. `drop_block` es el arreglo que sugiere el propio error."""
+    import agente.modelos as m
+
+    monkeypatch.setattr(m, "listar_modelos", lambda p, k: [])
+
+    modelo = m.crear_modelo("claude", "clave-falsa", "claude-fable-5-1", 4096)
+
+    assert modelo.thinking["block_binding"]["prefix_mismatch_behavior"] == "drop_block"
+    assert "thinking-binding-controls-2026-08-01" in modelo.betas
+
+
 def test_limitar_recorta_solo_si_hace_falta(monkeypatch):
     import agente.modelos as m
 

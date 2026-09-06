@@ -190,6 +190,20 @@ Cosas que parecen bugs y no lo son, o que cuestan de encontrar:
   código que asuma que `content` es `str` se rompe. Ver `Agente._sistema()`.
 - **El caché no se activa con prompts cortos** (~1.000 tokens mínimo). No es
   un bug: es cómo funciona. Con un prompt corto simplemente no cachea.
+- **Cambiar `HERRAMIENTAS` puede romper para siempre una conversación vieja
+  de Claude.** Los modelos Claude 5 piensan (thinking adaptativo) por
+  default, y ese pensamiento queda firmado y atado a la lista de
+  herramientas del momento en que se generó. El día que agregás o sacás una
+  herramienta, la próxima vez que se relee esa conversación el proveedor
+  devuelve un 400 ("Invalid signature... The tools list differs from the
+  one this block was created with") y la persona ve "Se me rompió algo"
+  para siempre, porque el bloque inválido queda guardado en la memoria y se
+  reenvía en cada mensaje nuevo. `crear_modelo()` ya manda
+  `thinking.block_binding.prefix_mismatch_behavior="drop_block"` (con el
+  beta que pide el propio error) para que Anthropic tire el bloque viejo en
+  vez de romper el pedido entero. Si en algún momento se cambia de modelo a
+  uno que no soporte `thinking: adaptive` (pre-4.7), va a hacer falta sacar
+  o condicionar este bloque.
 - **`check_same_thread=False`** en la conexión de SQLite: el servidor web
   atiende en varios hilos y sin eso rompe.
 - **El pool de Postgres se deja abierto a propósito** en `memoria.postgres()`.
