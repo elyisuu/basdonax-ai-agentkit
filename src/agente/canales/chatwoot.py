@@ -195,6 +195,35 @@ class Chatwoot(Canal):
                 {"content": texto, "message_type": "outgoing"},
             )
 
+    def anotar(self, conversacion: str, texto: str) -> None:
+        """Deja una nota privada en la conversación: la ve el equipo, no la persona.
+
+        Es para avisos internos — una reserva o un pedido nuevo, por ejemplo
+        — que alguien del equipo tiene que confirmar. Sale como `outgoing` y
+        `private`: así es como Chatwoot marca una nota interna.
+        """
+        self._api(
+            "POST",
+            f"conversations/{conversacion}/messages",
+            {"content": texto, "message_type": "outgoing", "private": True},
+        )
+
+    def etiquetar(self, conversacion: str, etiqueta: str) -> None:
+        """Le suma una etiqueta a la conversación, sin pisar las que ya tenía.
+
+        La API de Chatwoot reemplaza todo el conjunto de etiquetas en cada
+        pedido (no hay un "agregar una sola"). Por eso primero se pregunta
+        cuáles tiene y se manda la unión.
+        """
+        actuales = {str(e).strip().lower() for e in self._etiquetas_de(conversacion)}
+        actuales.add(etiqueta.strip().lower())
+
+        self._api(
+            "POST",
+            f"conversations/{conversacion}/labels",
+            {"labels": sorted(actuales)},
+        )
+
     def escribiendo(self, conversacion: str, encendido: bool = True) -> None:
         """El "escribiendo..." mientras el modelo piensa.
 

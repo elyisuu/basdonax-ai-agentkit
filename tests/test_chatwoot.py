@@ -192,6 +192,46 @@ def test_el_tipo_tambien_se_entiende_como_numero(crudo, esperado):
     assert _tipo_de_mensaje(crudo) == esperado
 
 
+# -- Notas y etiquetas propias (no las de deberia_responder) -----------------
+
+
+def test_anotar_deja_una_nota_privada():
+    canal = ChatwootFalso()
+
+    canal.anotar("12", "Reserva nueva")
+
+    nota = [l for l in canal.llamadas if l["camino"].endswith("/messages")][0]
+    assert nota["camino"] == "conversations/12/messages"
+    assert nota["datos"]["content"] == "Reserva nueva"
+    assert nota["datos"]["private"] is True, "si no, la nota le llega al cliente"
+    assert nota["datos"]["message_type"] == "outgoing"
+
+
+def test_etiquetar_no_pisa_las_etiquetas_que_ya_habia():
+    """La API de Chatwoot reemplaza todo el conjunto: hay que mandar la unión."""
+    canal = ChatwootFalso(etiquetas_remotas=["vip"])
+
+    canal.etiquetar("12", "reserva-nueva")
+
+    # La primera llamada a /labels es el GET que pregunta cuáles ya tenía
+    # (_etiquetas_de); la que importa acá es el POST que las reemplaza.
+    pedido = [
+        l for l in canal.llamadas if l["camino"].endswith("/labels") and l["metodo"] == "POST"
+    ][0]
+    assert sorted(pedido["datos"]["labels"]) == ["reserva-nueva", "vip"]
+
+
+def test_etiquetar_no_le_importan_las_mayusculas():
+    canal = ChatwootFalso(etiquetas_remotas=["Vip"])
+
+    canal.etiquetar("12", "Reserva-Nueva")
+
+    pedido = [
+        l for l in canal.llamadas if l["camino"].endswith("/labels") and l["metodo"] == "POST"
+    ][0]
+    assert sorted(pedido["datos"]["labels"]) == ["reserva-nueva", "vip"]
+
+
 # -- Lo que sale --------------------------------------------------------------
 
 

@@ -6,12 +6,19 @@ y LangGraph la corre y le devuelve el resultado. Por eso el **docstring importa
 tanto como el código**: es literalmente lo único que el modelo lee para decidir
 si esta herramienta le sirve y qué mandarle.
 
-Acá hay una sola: el clima.
+Hay dos:
 
-Usa **Open-Meteo** (https://open-meteo.com), que es gratis, no pide registro y
-no usa clave de API. Eso es a propósito: este repo es para probar y no queremos
-que arrancarlo dependa de sacar una credencial más. El uso no comercial no
-tiene costo ni tarjeta.
+  · `clima`           → no necesita nada del canal, funciona en cualquiera.
+  · `anotar_reserva`  → habla con Chatwoot, así que solo sirve en un canal
+                         que tenga Chatwoot configurado (hoy, WhatsApp). En
+                         Telegram o en la plataforma de pruebas, `config`
+                         viene sin datos de Chatwoot y la herramienta lo
+                         avisa como texto en vez de fallar.
+
+`clima` usa **Open-Meteo** (https://open-meteo.com), que es gratis, no pide
+registro y no usa clave de API. Eso es a propósito: este repo es para probar
+y no queremos que arrancarlo dependa de sacar una credencial más. El uso no
+comercial no tiene costo ni tarjeta.
 
 Son dos consultas encadenadas, porque la API del clima habla en coordenadas y
 las personas hablan en nombres de ciudades:
@@ -29,7 +36,11 @@ import json
 import urllib.parse
 import urllib.request
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+
+from .canales.chatwoot import Chatwoot
+from .config import Config
 
 GEOCODING = "https://geocoding-api.open-meteo.com/v1/search"
 PRONOSTICO = "https://api.open-meteo.com/v1/forecast"
@@ -112,9 +123,118 @@ def clima(lugar: str) -> str:
     return _redactar(encontrado, datos)
 
 
+# La etiqueta que le pone Chatwoot a una conversación con una reserva
+# anotada. Sirve para filtrar la bandeja; no tiene nada que ver con
+# CHATWOOT_ETIQUETA_HUMANO (esa apaga al bot, esta no).
+ETIQUETA_RESERVA = "reserva-nueva"
+
+
+@tool
+def anotar_reserva(
+    nombre: str,
+    personas: int,
+    fecha: str,
+    hora: str,
+    config: RunnableConfig,
+    telefono: str = "",
+    aclaracion: str = "",
+) -> str:
+    """Anota un pedido de reserva de mesa para que el restaurante lo confirme.
+
+    Usala recién cuando ya tenés nombre, cantidad de personas, fecha y hora
+    confirmados con la persona — repetile el resumen antes de llamarla: un
+    dato mal entendido acá es peor que preguntar de nuevo. Esta herramienta
+    NO confirma la reserva, solo la deja anotada: decile siempre a la
+    persona que queda pendiente de que el restaurante la confirme.
+
+    Args:
+        nombre: A nombre de quién es la reserva.
+        personas: Cuántas personas van a ser.
+        fecha: La fecha tal como te la dijo la persona (por ejemplo
+            "sábado 12" o "12/09"). No la conviertas ni la inventes.
+        hora: La hora tal como te la dijo la persona (por ejemplo "21hs").
+        telefono: Un teléfono de contacto, si lo dio. Opcional.
+        aclaracion: Algo para tener en cuenta (una alergia, un cumpleaños,
+            que pidió mesa afuera). Opcional.
+    """
+    chatwoot = _chatwoot_del_config(config)
+    if chatwoot is None:
+        # No es un error de verdad: en Telegram o en la plataforma de
+        # pruebas no hay Chatwoot, así que no hay dónde anotar nada. El
+        # modelo lee esto y se lo explica a la persona en vez de romperse.
+        return (
+            "No puedo anotar reservas en este canal: hace falta tener "
+            "Chatwoot configurado."
+        )
+
+    conversacion = _conversacion_de(config)
+    if not conversacion:
+        return "No pude identificar la conversación para anotar la reserva."
+
+    detalle = [
+        "📅 Reserva nueva",
+        f"Nombre: {nombre}",
+        f"Personas: {personas}",
+        f"Fecha: {fecha}",
+        f"Hora: {hora}",
+    ]
+    if telefono:
+        detalle.append(f"Teléfono: {telefono}")
+    if aclaracion:
+        detalle.append(f"Aclaración: {aclaracion}")
+
+    try:
+        chatwoot.anotar(conversacion, "\n".join(detalle))
+        chatwoot.etiquetar(conversacion, ETIQUETA_RESERVA)
+    except Exception as e:
+        # Misma razón que en clima(): si esto explota, LangGraph corta la
+        # respuesta entera. Devolviendo el problema como texto, el modelo se
+        # lo explica a la persona y la charla sigue. Los errores de
+        # Chatwoot vienen como ErrorDeChatwoot, con el motivo adentro.
+        return f"No se pudo anotar la reserva: {type(e).__name__}: {e}"
+
+    return (
+        "Reserva anotada. Avisale a la persona que queda pendiente de "
+        "confirmación del restaurante."
+    )
+
+
 # Lo que el agente tiene atado. Cuando agregues otra herramienta, sumala acá:
 # es la única lista que mira el grafo.
-HERRAMIENTAS = [clima]
+HERRAMIENTAS = [clima, anotar_reserva]
+
+
+# -- La reserva ---------------------------------------------------------------
+
+
+def _conversacion_de(config: RunnableConfig) -> str:
+    """El thread_id de la conversación (el id de Chatwoot, en ese canal).
+
+    `config` no lo manda el modelo: LangChain lo inyecta solo porque el
+    parámetro está anotado como `RunnableConfig` (mismo mecanismo con el que
+    Agente._config_hilo() arma el thread_id). Por eso no aparece en
+    `anotar_reserva.args`.
+    """
+    return str((config.get("configurable") or {}).get("thread_id") or "")
+
+
+def _chatwoot_del_config(config: RunnableConfig) -> Chatwoot | None:
+    """Un cliente de Chatwoot armado con el .env, o None si no está puesto.
+
+    No se guarda un cliente único a nivel de módulo: se arma en cada llamada,
+    igual que el prompt de sistema se relee en cada mensaje (ver
+    Agente._sistema()). Así, si cambiás las credenciales en el .env, la
+    próxima reserva ya las usa sin reiniciar nada.
+    """
+    ajustes = Config.desde_entorno()
+    if not ajustes.chatwoot_url or not ajustes.chatwoot_token:
+        return None
+
+    return Chatwoot(
+        url=ajustes.chatwoot_url,
+        token=ajustes.chatwoot_token,
+        cuenta_id=ajustes.chatwoot_cuenta_id,
+    )
 
 
 # -- Las consultas ------------------------------------------------------------

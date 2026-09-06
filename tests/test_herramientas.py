@@ -15,7 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agente import herramientas  # noqa: E402
-from agente.herramientas import HERRAMIENTAS, clima  # noqa: E402
+from agente.canales.chatwoot import ErrorDeChatwoot  # noqa: E402
+from agente.herramientas import HERRAMIENTAS, anotar_reserva, clima  # noqa: E402
 
 ROSARIO = {
     "nombre": "Rosario",
@@ -121,3 +122,100 @@ def test_el_modelo_recibe_una_descripcion_util():
     assert clima.name == "clima"
     assert "clima" in clima.description.lower()
     assert "lugar" in clima.args
+
+
+# -- anotar_reserva ------------------------------------------------------------
+#
+# No se prueba contra un Chatwoot de verdad: se reemplaza `_chatwoot_del_config`
+# por uno de mentira que anota lo que se le pidió, igual que hace
+# test_chatwoot.py con la API. `config` se arma a mano, con la misma forma que
+# le pasa Agente._config_hilo(): {"configurable": {"thread_id": ...}}.
+
+
+class _ChatwootDeMentira:
+    def __init__(self) -> None:
+        self.notas: list[tuple[str, str]] = []
+        self.etiquetas: list[tuple[str, str]] = []
+
+    def anotar(self, conversacion, texto):
+        self.notas.append((conversacion, texto))
+
+    def etiquetar(self, conversacion, etiqueta):
+        self.etiquetas.append((conversacion, etiqueta))
+
+
+def _config(thread_id="42") -> dict:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def test_anota_la_reserva_y_etiqueta_la_conversacion(monkeypatch):
+    falso = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: falso)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 4, "fecha": "sábado", "hora": "21hs"},
+        config=_config(),
+    )
+
+    assert "pendiente" in resultado.lower()
+    assert falso.notas[0][0] == "42"
+    assert "Juan" in falso.notas[0][1]
+    assert "4" in falso.notas[0][1]
+    assert falso.etiquetas == [("42", herramientas.ETIQUETA_RESERVA)]
+
+
+def test_los_datos_opcionales_solo_aparecen_si_se_dieron(monkeypatch):
+    falso = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: falso)
+
+    anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 2, "fecha": "hoy", "hora": "20hs"},
+        config=_config(),
+    )
+
+    assert "Teléfono" not in falso.notas[0][1]
+    assert "Aclaración" not in falso.notas[0][1]
+
+
+def test_sin_chatwoot_configurado_no_intenta_nada(monkeypatch):
+    """En Telegram o en la plataforma de pruebas no hay dónde anotar la reserva."""
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "hoy", "hora": "20hs"},
+        config=_config(),
+    )
+
+    assert "chatwoot" in resultado.lower()
+
+
+def test_si_falla_chatwoot_la_charla_sigue(monkeypatch):
+    """Una herramienta que levanta una excepción corta toda la respuesta."""
+
+    class _Explota:
+        def anotar(self, *a, **k):
+            raise ErrorDeChatwoot("Chatwoot devolvió 404 en conversations/42")
+
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: _Explota())
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "hoy", "hora": "20hs"},
+        config=_config(),
+    )
+
+    assert "ErrorDeChatwoot" in resultado
+    assert "404" in resultado
+
+
+def test_anotar_reserva_esta_en_la_lista():
+    assert anotar_reserva in HERRAMIENTAS
+
+
+def test_el_modelo_recibe_una_descripcion_util_de_la_reserva():
+    assert anotar_reserva.name == "anotar_reserva"
+    assert "reserva" in anotar_reserva.description.lower()
+    assert "nombre" in anotar_reserva.args
+    assert "config" not in anotar_reserva.args, (
+        "el thread_id se inyecta solo (RunnableConfig); "
+        "el modelo no lo tiene que mandar ni saber que existe"
+    )
