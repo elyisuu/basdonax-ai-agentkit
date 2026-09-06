@@ -1,0 +1,64 @@
+# El agente atendiendo WhatsApp, vía Chatwoot (webhook), en un servidor.
+#
+# Es el mismo Dockerfile que el del bot de Telegram (`Dockerfile`), pero con
+# el CMD apuntando a `webhook_chatwoot.py` en vez de `bot_telegram.py`.
+#
+# Están separados en dos archivos y no en un solo CMD que se pisa entre
+# despliegues porque Coolify guarda el campo "Start Command" pero no lo
+# aplica en runtime para builds por Dockerfile: lo único que manda es el CMD
+# de la imagen. Con dos Dockerfiles, cada aplicación de Coolify apunta al
+# suyo (`dockerfile_location`) y ninguna pisa el CMD de la otra en el
+# próximo deploy.
+#
+# A diferencia del bot de Telegram, este SÍ necesita dominio, HTTPS y el
+# health check prendido apuntando a /salud: es un webhook, así que Chatwoot
+# tiene que poder entrar.
+#
+# Toda la configuración entra por variables de entorno. El .env no se copia
+# acá adentro: en el servidor las variables las pone Coolify.
+
+FROM python:3.13-slim
+
+# Sin esto, Python se guarda los logs en un buffer y en el panel del servidor
+# no ves nada hasta que el proceso muere. Con un servidor que corre para
+# siempre, eso es no ver nunca nada.
+ENV PYTHONUNBUFFERED=1
+
+# Que las tildes no rompan cuando se imprime un mensaje.
+ENV PYTHONIOENCODING=utf-8
+
+WORKDIR /app
+
+# curl es para el health check del panel, no para la app.
+#
+# Coolify (y casi cualquier PaaS) revisa que el contenedor esté vivo pegándole
+# a una URL con curl o wget DESDE ADENTRO del contenedor. La imagen `slim` no
+# trae ninguno de los dos, así que sin esta línea el contenedor arranca bien,
+# atiende bien, y el panel igual lo marca *unhealthy* y lo da de baja. El log
+# que deja es "New container is not healthy, rolling back": no dice que falte
+# curl, y se pierde un rato largo buscando el error en otro lado.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Las dependencias primero y el código después: así, mientras no toques los
+# requirements, Docker reusa la capa ya instalada y el deploy tarda segundos
+# en vez de minutos.
+COPY requirements.txt requirements-produccion.txt ./
+RUN pip install --no-cache-dir -r requirements-produccion.txt
+
+COPY src/ ./src/
+COPY prompts/ ./prompts/
+COPY webhook_chatwoot.py bot_telegram.py ./
+
+# Sin esto corre como root sin necesidad: el servidor no escribe nada en
+# disco (la memoria va a Postgres).
+RUN useradd --create-home agente && chown -R agente:agente /app
+USER agente
+
+# El puerto donde escucha. Coolify lee este número para saber a dónde
+# mandarle el tráfico del dominio.
+ENV PUERTO=8000
+EXPOSE 8000
+
+CMD ["python", "webhook_chatwoot.py"]
