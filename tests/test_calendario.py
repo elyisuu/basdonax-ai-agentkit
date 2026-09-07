@@ -68,7 +68,7 @@ class CalendarioFalso(Calendario):
         self.llamadas: list[dict] = []
         self._ocupado_remoto = ocupado_remoto or []
 
-    def _api(self, metodo, camino, cuerpo):
+    def _api(self, metodo, camino, cuerpo=None):
         self.llamadas.append({"metodo": metodo, "camino": camino, "cuerpo": cuerpo})
 
         if camino == "freeBusy":
@@ -178,6 +178,79 @@ def test_crear_evento_manda_titulo_descripcion_y_horarios():
     assert pedido["cuerpo"]["description"] == "Nombre: Juan\nPersonas: 4"
     assert pedido["cuerpo"]["start"]["dateTime"] == inicio.isoformat()
     assert pedido["cuerpo"]["end"]["dateTime"] == fin.isoformat()
+
+
+def test_crear_evento_confirma_por_defecto():
+    cal = CalendarioFalso()
+    inicio, fin = cal.rango("2026-09-12", "21:00", 60)
+
+    cal.crear_evento("Juan (4p)", "...", inicio, fin)
+
+    assert cal.llamadas[0]["cuerpo"]["status"] == "confirmed"
+
+
+def test_crear_evento_puede_quedar_tentative():
+    """RESERVA_REQUIERE_APROBACION: el horario queda tomado, pendiente de
+    que alguien del negocio lo apruebe."""
+    cal = CalendarioFalso()
+    inicio, fin = cal.rango("2026-09-12", "21:00", 60)
+
+    cal.crear_evento("Juan (4p)", "...", inicio, fin, estado="tentative")
+
+    assert cal.llamadas[0]["cuerpo"]["status"] == "tentative"
+
+
+# -- Aprobar y cancelar -------------------------------------------------------------
+
+
+def test_aprobar_evento_lo_pasa_a_confirmed():
+    cal = CalendarioFalso()
+
+    cal.aprobar_evento("evento-1")
+
+    pedido = cal.llamadas[0]
+    assert pedido["metodo"] == "PATCH"
+    assert pedido["camino"] == (
+        "calendars/negocio%40group.calendar.google.com/events/evento-1"
+    )
+    assert pedido["cuerpo"] == {"status": "confirmed"}
+
+
+def test_cancelar_evento_borra_sin_mandar_cuerpo():
+    cal = CalendarioFalso()
+
+    cal.cancelar_evento("evento-1")
+
+    pedido = cal.llamadas[0]
+    assert pedido["metodo"] == "DELETE"
+    assert pedido["camino"] == (
+        "calendars/negocio%40group.calendar.google.com/events/evento-1"
+    )
+    assert pedido["cuerpo"] is None
+
+
+def test_la_api_de_verdad_acepta_una_respuesta_vacia(monkeypatch):
+    """Google contesta 204 sin cuerpo al borrar un evento — json.loads("")
+    explotaría justo en el caso que más importa: cancelar un turno
+    rechazado."""
+    import io
+    import urllib.request
+
+    cal = Calendario(calendario_id="negocio@x.com", credencial_json=CREDENCIAL)
+    monkeypatch.setattr(cal, "_access_token", lambda: "token-de-prueba")
+
+    class _RespuestaVacia(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _RespuestaVacia(b"")
+    )
+
+    assert cal.cancelar_evento("evento-1") == {}
 
 
 # -- Errores de la API real (sin la _api de mentira) ------------------------------

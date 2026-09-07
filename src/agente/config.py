@@ -82,6 +82,22 @@ class Config:
     # paso a paso en AGENTS.md.
     google_service_account_json: str = ""
 
+    # -- Aprobación manual de la reserva, con calendario conectado ----------
+    # Con esto en true, anotar_reserva() no confirma el turno de una: lo
+    # deja "tentative" en el calendario (el horario queda tomado igual, para
+    # que no lo pise otra persona) y espera a que alguien del negocio lo
+    # apruebe con el link que le llega a Chatwoot. Ver AGENTS.md.
+    reserva_requiere_aprobacion: bool = False
+    # El dominio público de este servidor (el mismo de CHATWOOT_URL del
+    # webhook, sin la barra final), para armar esos links de aprobar/
+    # rechazar. Sin esto, la reserva queda "tentative" pero sin un link para
+    # resolverla — hay que ir directo a Google Calendar.
+    url_publica: str = ""
+    # El secreto que firma esos links, mismo criterio que
+    # CHATWOOT_WEBHOOK_TOKEN. Generalo con:
+    #     python -c "import secrets; print(secrets.token_hex(24))"
+    reserva_secreto: str = ""
+
     @classmethod
     def desde_entorno(
         cls, proveedor: str | None = None, modelo: str | None = None
@@ -147,6 +163,11 @@ class Config:
             google_service_account_json=(
                 os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
             ).strip(),
+            reserva_requiere_aprobacion=_booleano(
+                "RESERVA_REQUIERE_APROBACION", False
+            ),
+            url_publica=(os.getenv("URL_PUBLICA") or "").strip(),
+            reserva_secreto=(os.getenv("RESERVA_SECRETO") or "").strip(),
         )
 
 

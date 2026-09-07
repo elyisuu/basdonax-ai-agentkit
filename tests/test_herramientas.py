@@ -160,6 +160,8 @@ class _CalendarioDeMentira:
         self._ocupado = ocupado or []
         self._libre = libre
         self.eventos: list[dict] = []
+        self.aprobados: list[str] = []
+        self.cancelados: list[str] = []
 
     def ocupado(self, fecha):
         return self._ocupado
@@ -170,10 +172,21 @@ class _CalendarioDeMentira:
     def se_superpone(self, inicio, fin):
         return not self._libre
 
-    def crear_evento(self, titulo, descripcion, inicio, fin):
-        evento = {"titulo": titulo, "descripcion": descripcion}
+    def crear_evento(self, titulo, descripcion, inicio, fin, estado="confirmed"):
+        evento = {
+            "id": f"evento-{len(self.eventos) + 1}",
+            "titulo": titulo,
+            "descripcion": descripcion,
+            "estado": estado,
+        }
         self.eventos.append(evento)
         return evento
+
+    def aprobar_evento(self, evento_id):
+        self.aprobados.append(evento_id)
+
+    def cancelar_evento(self, evento_id):
+        self.cancelados.append(evento_id)
 
 
 def _config(thread_id="42") -> dict:
@@ -184,6 +197,44 @@ def _sin_nada(monkeypatch) -> None:
     """Ni Chatwoot ni calendario conectados — el caso de Telegram, por ejemplo."""
     monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
     monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+
+class _AjustesDeMentira:
+    """Ídem Config, pero solo los campos que anotar_reserva mira de acá."""
+
+    def __init__(
+        self,
+        reserva_requiere_aprobacion=False,
+        url_publica="",
+        reserva_secreto="",
+    ) -> None:
+        self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
+        self.url_publica = url_publica
+        self.reserva_secreto = reserva_secreto
+
+
+def _sin_aprobacion(monkeypatch) -> None:
+    """RESERVA_REQUIERE_APROBACION en false — el caso normal (Nivel 2).
+
+    Hace falta en cualquier test que llegue a crear el evento en el
+    calendario: sin esto, anotar_reserva llamaría a la Config de verdad y
+    el test dependería del .env de esta máquina.
+    """
+    monkeypatch.setattr(
+        herramientas, "_ajustes_del_config", lambda config: _AjustesDeMentira()
+    )
+
+
+def _con_aprobacion(monkeypatch, url_publica="", reserva_secreto="") -> None:
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(
+            reserva_requiere_aprobacion=True,
+            url_publica=url_publica,
+            reserva_secreto=reserva_secreto,
+        ),
+    )
 
 
 # -- Nivel 1: solo Chatwoot, sin calendario --------------------------------------
@@ -259,6 +310,7 @@ def test_si_falla_chatwoot_y_no_hay_calendario_se_avisa_del_error(monkeypatch):
 def test_con_calendario_libre_confirma_el_turno(monkeypatch):
     cal = _CalendarioDeMentira(libre=True)
     chatwoot = _ChatwootDeMentira()
+    _sin_aprobacion(monkeypatch)
     monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
     monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
 
@@ -317,6 +369,7 @@ def test_si_falla_chatwoot_pero_el_calendario_ya_confirmo_no_se_pierde_el_turno(
         def anotar(self, *a, **k):
             raise ErrorDeChatwoot("Chatwoot devolvió 500")
 
+    _sin_aprobacion(monkeypatch)
     monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
     monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: _Explota())
 
@@ -327,6 +380,98 @@ def test_si_falla_chatwoot_pero_el_calendario_ya_confirmo_no_se_pierde_el_turno(
 
     assert "confirmado" in resultado.lower()
     assert cal.eventos, "el turno se creó igual"
+
+
+# -- Nivel 1.5: calendario conectado, pero con aprobación manual ----------------
+
+
+def test_con_aprobacion_el_evento_queda_tentative_y_no_confirmado(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    _con_aprobacion(monkeypatch)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
+        config=_config(),
+    )
+
+    assert cal.eventos, "el horario tiene que quedar tomado en el calendario"
+    assert cal.eventos[0]["estado"] == "tentative"
+    assert "confirmado" not in resultado.lower()
+    assert "espera" in resultado.lower() or "aprueb" in resultado.lower()
+
+
+def test_con_aprobacion_la_etiqueta_es_distinta_de_la_normal(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    _con_aprobacion(monkeypatch)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
+        config=_config(),
+    )
+
+    assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA_PENDIENTE)]
+    assert herramientas.ETIQUETA_RESERVA_PENDIENTE != herramientas.ETIQUETA_RESERVA
+
+
+def test_con_aprobacion_sin_url_publica_avisa_que_hay_que_ir_al_calendario(monkeypatch):
+    """Sin URL_PUBLICA/RESERVA_SECRETO no hay links, pero el turno igual
+    queda tomado — no puede fallar la reserva por esto."""
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    _con_aprobacion(monkeypatch)  # sin url_publica ni reserva_secreto
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
+        config=_config(),
+    )
+
+    nota = chatwoot.notas[0][1]
+    assert "google calendar" in nota.lower()
+    assert "http" not in nota
+
+
+def test_con_aprobacion_con_url_publica_suma_los_dos_links(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    _con_aprobacion(
+        monkeypatch, url_publica="https://negocio.com", reserva_secreto="shhh"
+    )
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
+        config=_config(),
+    )
+
+    nota = chatwoot.notas[0][1]
+    assert "https://negocio.com/reservas/aprobar/42/evento-1?token=" in nota
+    assert "https://negocio.com/reservas/rechazar/42/evento-1?token=" in nota
+
+
+def test_con_aprobacion_y_horario_ocupado_no_crea_nada(monkeypatch):
+    """El chequeo de disponibilidad es el mismo de siempre, con o sin
+    aprobación manual."""
+    cal = _CalendarioDeMentira(libre=False)
+    _con_aprobacion(monkeypatch)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(),
+    )
+
+    assert "ocupado" in resultado.lower()
+    assert not cal.eventos
 
 
 # -- franjas_ocupadas -------------------------------------------------------------

@@ -33,9 +33,11 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
+from .. import aprobacion
 from ..agente import Agente
+from ..calendario import Calendario
 from ..canales.buffer import BufferDeMensajes
 from ..canales.chatwoot import Chatwoot
 from ..config import Config
@@ -47,11 +49,13 @@ def crear_app(
     config: Config | None = None,
     agente: Agente | None = None,
     canal: Chatwoot | None = None,
+    calendario: Calendario | None = None,
 ) -> FastAPI:
     """Arma el servidor.
 
-    El agente y el canal se pueden pasar armados: es lo que hacen los tests
-    para probar todo esto sin salir a internet ni gastar un token.
+    El agente, el canal y el calendario se pueden pasar armados: es lo que
+    hacen los tests para probar todo esto sin salir a internet ni gastar
+    un token.
     """
     config = config or Config.desde_entorno()
 
@@ -61,6 +65,16 @@ def crear_app(
         cuenta_id=config.chatwoot_cuenta_id,
         etiqueta_humano=config.chatwoot_etiqueta_humano,
     )
+
+    # Solo para /reservas/{accion}: aprobar o rechazar una reserva
+    # "tentative". Si el negocio no conectó calendario, queda None y esas
+    # rutas avisan que no hay nada que aprobar, en vez de fallar.
+    if calendario is None and config.google_calendar_id and config.google_service_account_json:
+        calendario = Calendario(
+            calendario_id=config.google_calendar_id,
+            credencial_json=config.google_service_account_json,
+            zona_horaria=config.zona_horaria,
+        )
 
     # El agente se arma una sola vez y atiende a todo el mundo. Es lo que
     # queremos: adentro tiene la conexión a Postgres, y armarlo por mensaje
@@ -166,5 +180,64 @@ def crear_app(
         await buffer.agregar(entrante.conversacion, entrante.texto)
 
         return JSONResponse({"estado": "recibido"})
+
+    @app.get("/reservas/{accion}/{conversacion}/{evento_id}")
+    async def reserva_pendiente(
+        accion: str, conversacion: str, evento_id: str, token: str = ""
+    ) -> HTMLResponse:
+        """El link que alguien del negocio abre desde el celular para
+        aprobar o rechazar una reserva "tentative" (RESERVA_REQUIERE_APROBACION).
+
+        Es HTML y no JSON a propósito: esto lo abre una persona en el
+        navegador, no un programa. No hay login — la seguridad es el token
+        de la URL, mismo criterio que /chatwoot/<token> (ver aprobacion.py).
+        """
+        if accion not in aprobacion.ACCIONES:
+            return HTMLResponse("Acción desconocida.", status_code=404)
+
+        if calendario is None or not config.reserva_secreto:
+            return HTMLResponse(
+                "Este negocio no tiene la aprobación por link configurada "
+                "(faltan GOOGLE_CALENDAR_ID/GOOGLE_SERVICE_ACCOUNT_JSON o "
+                "RESERVA_SECRETO en el .env).",
+                status_code=404,
+            )
+
+        if not aprobacion.valido(config.reserva_secreto, conversacion, evento_id, token):
+            return HTMLResponse("Link inválido o vencido.", status_code=403)
+
+        try:
+            if accion == "aprobar":
+                await asyncio.to_thread(calendario.aprobar_evento, evento_id)
+                await asyncio.to_thread(
+                    canal.enviar,
+                    conversacion,
+                    ["¡Tu turno quedó confirmado! Te esperamos."],
+                )
+                await asyncio.to_thread(
+                    canal.etiquetar, conversacion, "reserva-confirmada"
+                )
+                mensaje = "Reserva aprobada. Ya se le avisó a la persona."
+            else:
+                await asyncio.to_thread(calendario.cancelar_evento, evento_id)
+                await asyncio.to_thread(
+                    canal.enviar,
+                    conversacion,
+                    [
+                        "Por ese horario no vamos a poder atenderte, "
+                        "disculpá. Escribinos para coordinar otro."
+                    ],
+                )
+                await asyncio.to_thread(
+                    canal.etiquetar, conversacion, "reserva-rechazada"
+                )
+                mensaje = "Reserva rechazada. Ya se le avisó a la persona."
+        except Exception as e:
+            registro.error("[%s] error al %s la reserva: %s", conversacion, accion, e)
+            return HTMLResponse(
+                f"Algo falló: {type(e).__name__}: {e}", status_code=500
+            )
+
+        return HTMLResponse(f"<h1>Listo</h1><p>{mensaje}</p>")
 
     return app

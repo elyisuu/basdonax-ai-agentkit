@@ -427,6 +427,45 @@ Google" — pero es un proyecto aparte, no algo para hacer de entrada.
   confirmó, un fallo al avisar en Chatwoot no tira abajo el turno. Sin
   ninguno de los dos, avisa que no puede tomar la reserva en ese canal.
 
+## Reserva con aprobación manual (Nivel 1.5)
+
+Algunos negocios no quieren que el agente confirme solo, ni que la reserva
+quede solo anotada esperando que alguien la revise en Chatwoot sin chequear
+disponibilidad real. El punto medio: `RESERVA_REQUIERE_APROBACION=true` en
+el `.env`, con calendario Y Chatwoot conectados.
+
+Qué cambia en `anotar_reserva` (`herramientas.py`):
+
+1. Chequea disponibilidad real, igual que siempre.
+2. Crea el evento en el calendario con estado **"tentative"** en vez de
+   "confirmed" (`Calendario.crear_evento(..., estado=...)`). Un evento
+   "tentative" sigue contando como ocupado para `freeBusy` — nadie más
+   puede reservar ese horario mientras el negocio decide.
+3. La nota que le llega a Chatwoot queda con la etiqueta
+   `reserva-pendiente-aprobacion` (distinta de `reserva-nueva`, para poder
+   filtrar en la bandeja "qué me falta aprobar") y, si están puestos
+   `URL_PUBLICA` y `RESERVA_SECRETO`, con dos links de un clic: uno para
+   aprobar, uno para rechazar.
+
+Esos links los abre una persona del negocio desde el celular, sin login
+(`GET /reservas/{aprobar|rechazar}/{conversacion}/{evento_id}?token=...`,
+en `web/webhook.py`). La seguridad es el `token` de la URL — mismo criterio
+que `CHATWOOT_WEBHOOK_TOKEN` en la URL del webhook, no una cookie ni un
+usuario y contraseña — y lo arma y lo valida `aprobacion.py` con HMAC:
+firma la `(conversación, evento_id)`, así que un link sirve solo para ESA
+reserva puntual. No hay tabla ni sesión que guardar en ningún lado.
+
+Al abrir el link:
+
+- **Aprobar** → `Calendario.aprobar_evento()` pasa el evento a "confirmed",
+  y se le avisa a la persona por WhatsApp que el turno quedó confirmado.
+- **Rechazar** → `Calendario.cancelar_evento()` borra el evento (libera el
+  horario para otra persona), y se le avisa que ese horario no se pudo.
+
+Sin `URL_PUBLICA`/`RESERVA_SECRETO` puestos, este modo igual reserva el
+horario en el calendario (nadie te lo dobla-reserva), pero sin links: hay
+que aprobar o rechazar directo en Google Calendar a mano.
+
 
 ## Hacia dónde va (para no diseñar en contra)
 

@@ -137,20 +137,54 @@ class Calendario:
     # -- Crear -----------------------------------------------------------------
 
     def crear_evento(
-        self, titulo: str, descripcion: str, inicio: datetime, fin: datetime
+        self,
+        titulo: str,
+        descripcion: str,
+        inicio: datetime,
+        fin: datetime,
+        estado: str = "confirmed",
     ) -> dict:
-        """Crea el turno en el calendario. Devuelve el evento creado."""
+        """Crea el turno en el calendario. Devuelve el evento creado.
+
+        `estado` es "confirmed" (por defecto: el turno queda firme) o
+        "tentative" (el horario queda tomado — freeBusy lo cuenta ocupado
+        igual, nadie más lo puede reservar — pero a la espera de que
+        alguien del negocio lo apruebe con `aprobar_evento`). Ver
+        RESERVA_REQUIERE_APROBACION en AGENTS.md.
+        """
         return self._api(
             "POST",
             f"calendars/{urllib.parse.quote(self.calendario_id, safe='')}/events",
             {
                 "summary": titulo,
                 "description": descripcion,
+                "status": estado,
                 # El offset va adentro del propio dateTime (gracias a
                 # ZoneInfo): no hace falta mandar un campo timeZone aparte.
                 "start": {"dateTime": inicio.isoformat()},
                 "end": {"dateTime": fin.isoformat()},
             },
+        )
+
+    def aprobar_evento(self, evento_id: str) -> dict:
+        """Pasa un turno "tentative" a "confirmed": la aprobación del negocio."""
+        return self._api(
+            "PATCH",
+            f"calendars/{urllib.parse.quote(self.calendario_id, safe='')}"
+            f"/events/{urllib.parse.quote(evento_id, safe='')}",
+            {"status": "confirmed"},
+        )
+
+    def cancelar_evento(self, evento_id: str) -> dict:
+        """Cancela un turno — por ejemplo, uno "tentative" que el negocio rechazó.
+
+        Un evento cancelado deja de contar como ocupado: libera el horario
+        para que otra persona lo pueda reservar.
+        """
+        return self._api(
+            "DELETE",
+            f"calendars/{urllib.parse.quote(self.calendario_id, safe='')}"
+            f"/events/{urllib.parse.quote(evento_id, safe='')}",
         )
 
     # -- Autenticación y HTTP -----------------------------------------------
@@ -193,11 +227,18 @@ class Calendario:
         self._token_vence = time.time() + datos.get("expires_in", 3600)
         return self._token
 
-    def _api(self, metodo: str, camino: str, cuerpo: dict) -> dict:
-        """Un pedido a la API de Calendar. Punto único que tocan los tests."""
+    def _api(self, metodo: str, camino: str, cuerpo: dict | None = None) -> dict:
+        """Un pedido a la API de Calendar. Punto único que tocan los tests.
+
+        `cuerpo` es opcional porque borrar un evento (DELETE) no lleva
+        cuerpo. Y la respuesta puede venir vacía (Google contesta 204 sin
+        nada al borrar): sin el `if cuerpo_resp` de abajo, json.loads("")
+        explota justo en el caso que más queremos que funcione — cancelar
+        un turno rechazado.
+        """
         pedido = urllib.request.Request(
             f"{API}/{camino}",
-            data=json.dumps(cuerpo).encode("utf-8"),
+            data=json.dumps(cuerpo).encode("utf-8") if cuerpo is not None else None,
             method=metodo,
             headers={
                 "Content-Type": "application/json",
@@ -207,9 +248,11 @@ class Calendario:
 
         try:
             with urllib.request.urlopen(pedido, timeout=ESPERA_DE_RED) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                cuerpo_resp = resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             detalle = e.read().decode("utf-8", "replace")[:300]
             raise ErrorDeCalendario(
                 f"Google Calendar devolvió {e.code} en {metodo} {camino}: {detalle}"
             ) from None
+
+        return json.loads(cuerpo_resp) if cuerpo_resp else {}

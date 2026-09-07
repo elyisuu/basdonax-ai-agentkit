@@ -14,11 +14,15 @@ Hay tres:
   · `anotar_reserva`    → guarda el turno. Si hay calendario conectado, lo
                            confirma de una (chequea el horario y crea el
                            evento); si no, deja una nota en Chatwoot
-                           pendiente de que alguien la confirme a mano.
-                           Sirve con cualquiera de los dos, con los dos, o
-                           con ninguno — en ese último caso avisa que no
-                           puede tomar reservas en ese canal, en vez de
-                           fallar.
+                           pendiente de que alguien la confirme a mano. Con
+                           RESERVA_REQUIERE_APROBACION, un tercer modo:
+                           calendario conectado pero el turno queda
+                           "tentative" (el horario ya se lo lleva, nadie más
+                           lo puede tomar) hasta que alguien del negocio lo
+                           aprueba con un link. Sirve con cualquiera de los
+                           dos, con los dos, o con ninguno — en ese último
+                           caso avisa que no puede tomar reservas en ese
+                           canal, en vez de fallar.
 
 `clima` usa **Open-Meteo** (https://open-meteo.com), que es gratis, no pide
 registro y no usa clave de API. Eso es a propósito: este repo es para probar
@@ -44,6 +48,7 @@ import urllib.request
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
+from . import aprobacion
 from .calendario import Calendario
 from .canales.chatwoot import Chatwoot
 from .config import Config
@@ -134,6 +139,12 @@ def clima(lugar: str) -> str:
 # CHATWOOT_ETIQUETA_HUMANO (esa apaga al bot, esta no).
 ETIQUETA_RESERVA = "reserva-nueva"
 
+# La etiqueta de una reserva "tentative" en el calendario, a la espera de
+# que alguien del negocio la apruebe (RESERVA_REQUIERE_APROBACION). Distinta
+# de ETIQUETA_RESERVA para que el equipo pueda filtrar en la bandeja
+# "qué me falta aprobar" de "qué ya quedó firme".
+ETIQUETA_RESERVA_PENDIENTE = "reserva-pendiente-aprobacion"
+
 
 @tool
 def franjas_ocupadas(fecha: str, config: RunnableConfig) -> str:
@@ -184,11 +195,14 @@ def anotar_reserva(
     Si el negocio tiene Google Calendar conectado, esta herramienta CONFIRMA
     la reserva de una: revisa que el horario esté libre y crea el evento —
     llamá antes a franjas_ocupadas para no ofrecer un horario tomado. Si el
-    negocio NO tiene calendario, la reserva queda anotada nada más,
-    pendiente de que alguien la confirme a mano.
+    negocio pide aprobación manual (RESERVA_REQUIERE_APROBACION), el horario
+    queda reservado igual (nadie más lo puede tomar) pero a la espera de que
+    alguien del negocio lo apruebe. Si el negocio NO tiene calendario, la
+    reserva queda anotada nada más, pendiente de que alguien la confirme a
+    mano.
 
-    De cualquiera de las dos formas, repetile el resumen a la persona antes
-    de llamar a esta herramienta: un dato mal entendido acá es peor que
+    De cualquiera de las formas, repetile el resumen a la persona antes de
+    llamar a esta herramienta: un dato mal entendido acá es peor que
     preguntar de nuevo.
 
     Args:
@@ -218,6 +232,8 @@ def anotar_reserva(
     texto_detalle = "\n".join(detalle)
 
     confirmada = False
+    evento_pendiente_id: str | None = None
+
     try:
         calendario = _calendario_del_config(config)
         if calendario is not None:
@@ -230,17 +246,24 @@ def anotar_reserva(
                     "consultar franjas_ocupadas de nuevo para ese día."
                 )
 
-            calendario.crear_evento(
+            requiere_aprobacion = _ajustes_del_config(config).reserva_requiere_aprobacion
+
+            evento = calendario.crear_evento(
                 titulo=f"{nombre} ({personas}p)",
                 descripcion=texto_detalle,
                 inicio=inicio,
                 fin=fin,
+                estado="tentative" if requiere_aprobacion else "confirmed",
             )
-            confirmada = True
+
+            if requiere_aprobacion:
+                evento_pendiente_id = evento.get("id")
+            else:
+                confirmada = True
     except Exception as e:
         return f"No se pudo crear el turno en el calendario: {type(e).__name__}: {e}"
 
-    if chatwoot is None and not confirmada:
+    if chatwoot is None and not confirmada and not evento_pendiente_id:
         # Ni calendario ni Chatwoot: no hay dónde dejar ninguna constancia.
         return (
             "No puedo tomar reservas en este canal: hace falta tener "
@@ -250,22 +273,40 @@ def anotar_reserva(
     if chatwoot is not None:
         conversacion = _conversacion_de(config)
         if conversacion:
+            nota = "Reserva\n" + texto_detalle
+            etiqueta = ETIQUETA_RESERVA
+
+            if evento_pendiente_id:
+                etiqueta = ETIQUETA_RESERVA_PENDIENTE
+                ajustes = _ajustes_del_config(config)
+                nota += "\n\n" + _aviso_de_aprobacion(
+                    ajustes, conversacion, evento_pendiente_id
+                )
+
             try:
-                chatwoot.anotar(conversacion, "Reserva\n" + texto_detalle)
-                chatwoot.etiquetar(conversacion, ETIQUETA_RESERVA)
+                chatwoot.anotar(conversacion, nota)
+                chatwoot.etiquetar(conversacion, etiqueta)
             except Exception as e:
-                if not confirmada:
+                if not confirmada and not evento_pendiente_id:
                     # Acá Chatwoot ES la única constancia de la reserva: si
                     # esto falla, no se guardó en ningún lado. Tiene que
                     # llegar como error, no como "quedó anotada".
                     return f"No se pudo anotar la reserva: {type(e).__name__}: {e}"
-                # El calendario ya tiene la reserva confirmada; esto es
-                # solo para que el equipo también la vea en la bandeja, no
-                # es la fuente de la verdad — no vale la pena arruinar una
-                # reserva que sí se guardó por un aviso que no salió.
+                # El calendario ya tiene el horario tomado (confirmado o
+                # tentative); esto es solo para que el equipo también lo
+                # vea en la bandeja, no es la fuente de la verdad — no vale
+                # la pena arruinar una reserva que sí se guardó por un
+                # aviso que no salió.
 
     if confirmada:
         return f"Turno confirmado para el {fecha} a las {hora}. Avisale a la persona."
+
+    if evento_pendiente_id:
+        return (
+            f"Horario reservado para el {fecha} a las {hora}: ya nadie más lo "
+            "puede tomar, pero queda a la espera de que el negocio lo "
+            "apruebe. Avisale a la persona que le confirman en breve."
+        )
 
     return (
         "Reserva anotada. Avisale a la persona que queda pendiente de "
@@ -309,6 +350,41 @@ def _chatwoot_del_config(config: RunnableConfig) -> Chatwoot | None:
         token=ajustes.chatwoot_token,
         cuenta_id=ajustes.chatwoot_cuenta_id,
     )
+
+
+def _ajustes_del_config(config: RunnableConfig) -> Config:
+    """La configuración leída del .env.
+
+    Un nivel de indirección más, mismo criterio que _chatwoot_del_config y
+    _calendario_del_config: así los tests pueden reemplazar esto por
+    ajustes de mentira, sin depender de lo que diga el .env de verdad de
+    esta máquina.
+    """
+    return Config.desde_entorno()
+
+
+def _aviso_de_aprobacion(ajustes: Config, conversacion: str, evento_id: str) -> str:
+    """El texto que se suma a la nota de Chatwoot de una reserva "tentative".
+
+    Con URL_PUBLICA y RESERVA_SECRETO puestos, son dos links de un clic. Sin
+    eso, avisamos igual — la reserva ya está tomada en el calendario, pero
+    aprobarla hay que hacerlo directo desde Google Calendar.
+    """
+    if not ajustes.url_publica or not ajustes.reserva_secreto:
+        return (
+            "Queda pendiente de aprobación. Para que este aviso traiga "
+            "links de un clic, completá URL_PUBLICA y RESERVA_SECRETO en "
+            "el .env — mientras tanto, aprobala o rechazala directo en "
+            "Google Calendar."
+        )
+
+    aprobar = aprobacion.link(
+        ajustes.url_publica, conversacion, evento_id, ajustes.reserva_secreto, "aprobar"
+    )
+    rechazar = aprobacion.link(
+        ajustes.url_publica, conversacion, evento_id, ajustes.reserva_secreto, "rechazar"
+    )
+    return f"Aprobar: {aprobar}\nRechazar: {rechazar}"
 
 
 def _calendario_del_config(config: RunnableConfig) -> Calendario | None:

@@ -387,7 +387,7 @@ async def _anotar(donde, conversacion, texto):
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def cliente(canal, agente, token="secreto", buffer_segundos=0):
+def cliente(canal, agente, token="secreto", buffer_segundos=0, calendario=None):
     """Levanta el webhook con las piezas de mentira adentro."""
     pytest.importorskip("httpx", reason="TestClient de FastAPI necesita httpx")
     from fastapi.testclient import TestClient
@@ -400,7 +400,7 @@ def cliente(canal, agente, token="secreto", buffer_segundos=0):
     config.chatwoot_webhook_token = token
     config.buffer_segundos = buffer_segundos
 
-    return TestClient(crear_app(config, agente=agente, canal=canal))
+    return TestClient(crear_app(config, agente=agente, canal=canal, calendario=calendario))
 
 
 def test_el_mensaje_da_la_vuelta_completa():
