@@ -486,6 +486,16 @@ por sobre `HORARIO_DESDE`/`HORARIO_HASTA` — alcanza con que la hora caiga
 en CUALQUIERA de las franjas. Sin `HORARIO_FRANJAS`, se usa el rango único
 de siempre (un solo turno corrido).
 
+**`franjas_ocupadas` también sabe del horario**, no solo `anotar_reserva`.
+Sin esto, el modelo podía consultar disponibilidad, ver que el calendario
+tenía libre un horario que en realidad caía en el corte de un horario
+partido, ofrecérselo a la persona, pedirle nombre y cantidad de personas,
+y recién ahí (al llamar a `anotar_reserva`) enterarse de que no se podía —
+una vuelta de más innecesaria. Ahora `franjas_ocupadas` le suma al modelo
+una línea con `horario.descripcion()` ("Atiende de 09:00 a 15:00 y 18:00 a
+23:00.") y, si el día completo está cerrado (`DIAS_CERRADOS`), lo avisa de
+una sin ni siquiera consultar el calendario.
+
 ## Cancelar y reprogramar mi propia reserva
 
 `cancelar_mi_reserva` y `reprogramar_mi_reserva` (`herramientas.py`) — para

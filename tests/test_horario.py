@@ -101,6 +101,38 @@ def test_en_el_corte_entre_franjas_explota():
         horario.validar("2026-09-12", "16:30", franjas="09:00-15:00, 18:00-23:00")
 
 
+def test_dia_cerrado_reconoce_el_dia():
+    # 2026-09-13 es domingo.
+    assert horario.dia_cerrado("2026-09-13", "domingo") is True
+    assert horario.dia_cerrado("2026-09-12", "domingo") is False
+
+
+def test_dia_cerrado_sin_nada_configurado():
+    assert horario.dia_cerrado("2026-09-13", "") is False
+
+
+def test_descripcion_con_franjas():
+    assert horario.descripcion("", "", "09:00-15:00,18:00-23:00") == (
+        "Atiende de 09:00 a 15:00 y 18:00 a 23:00."
+    )
+
+
+def test_descripcion_con_desde_y_hasta():
+    assert horario.descripcion("10:00", "22:00", "") == "Atiende de 10:00 a 22:00."
+
+
+def test_descripcion_solo_desde():
+    assert horario.descripcion("10:00", "", "") == "Atiende desde las 10:00."
+
+
+def test_descripcion_solo_hasta():
+    assert horario.descripcion("", "22:00", "") == "Atiende hasta las 22:00."
+
+
+def test_descripcion_vacia_sin_nada_configurado():
+    assert horario.descripcion("", "", "") == ""
+
+
 def test_franjas_manda_por_sobre_desde_hasta():
     """Si hay franjas puestas, un desde/hasta viejo no interfiere."""
     horario.validar(

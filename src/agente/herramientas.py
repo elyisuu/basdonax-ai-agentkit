@@ -176,14 +176,20 @@ def franjas_ocupadas(fecha: str, config: RunnableConfig) -> str:
     Llamala ANTES de anotar_reserva cuando el negocio tenga un calendario
     conectado, para no ofrecerle a la persona un horario que ya está
     tomado. Lo que no aparece en la lista y cae dentro del horario de
-    atención (el que sabés por tu propio prompt) está libre.
+    atención (que esta misma herramienta te aclara, si el negocio lo tiene
+    configurado) está libre.
 
     Args:
         fecha: La fecha a consultar, en formato AAAA-MM-DD (por ejemplo
             "2026-09-13"). Convertí "el sábado" o "mañana" a esta forma
             usando la fecha de hoy que tenés en el mensaje de sistema.
     """
+    ajustes = _ajustes_del_config(config)
+
     try:
+        if horario.dia_cerrado(fecha, ajustes.dias_cerrados):
+            return f"El {fecha} el negocio está cerrado — no ofrezcas ese día."
+
         calendario = _calendario_del_config(config)
         if calendario is None:
             return "Este negocio no tiene un calendario conectado."
@@ -195,11 +201,24 @@ def franjas_ocupadas(fecha: str, config: RunnableConfig) -> str:
         return f"No se pudo consultar el calendario: {type(e).__name__}: {e}"
 
     if not ocupado:
-        return f"No hay nada ocupado en el calendario el {fecha}."
+        base = f"No hay nada ocupado en el calendario el {fecha}."
+    else:
+        lineas = [f"Horarios ocupados el {fecha}:"]
+        lineas += [f"- {desde}–{hasta}" for desde, hasta in ocupado]
+        base = "\n".join(lineas)
 
-    lineas = [f"Horarios ocupados el {fecha}:"]
-    lineas += [f"- {desde}–{hasta}" for desde, hasta in ocupado]
-    return "\n".join(lineas)
+    # Sin esto, el modelo podía ofrecer un horario que el calendario tiene
+    # libre pero que en realidad cae fuera de atención (el corte de un
+    # horario partido, por ejemplo) — y recién se enteraba al llamar a
+    # anotar_reserva, después de pedirle nombre y personas a la persona
+    # para nada.
+    aviso = horario.descripcion(
+        ajustes.horario_desde, ajustes.horario_hasta, ajustes.horario_franjas
+    )
+    if aviso:
+        base += f"\n{aviso} No ofrezcas nada fuera de esa atención."
+
+    return base
 
 
 @tool

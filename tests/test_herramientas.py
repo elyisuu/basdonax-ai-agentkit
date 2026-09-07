@@ -845,6 +845,42 @@ def test_si_falla_el_calendario_al_consultar_la_charla_sigue(monkeypatch):
     assert "500" in resultado
 
 
+def test_franjas_ocupadas_un_dia_cerrado_no_consulta_el_calendario(monkeypatch):
+    """Antes de esto, el modelo se enteraba de que el día estaba cerrado
+    recién al intentar anotar_reserva — acá se lo decimos de una."""
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    _con_horario(monkeypatch, cerrados="domingo")
+
+    # 2026-09-13 es domingo.
+    resultado = franjas_ocupadas.invoke({"fecha": "2026-09-13"}, config=_config())
+
+    assert "cerrado" in resultado.lower()
+
+
+def test_franjas_ocupadas_avisa_el_horario_de_atencion(monkeypatch):
+    """Sin este aviso, el modelo puede ofrecer un horario que el calendario
+    tiene libre pero que cae fuera de atención (el corte de un horario
+    partido, por ejemplo)."""
+    cal = _CalendarioDeMentira(ocupado=[])
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    _con_horario(monkeypatch, franjas="09:00-15:00,18:00-23:00")
+
+    resultado = franjas_ocupadas.invoke({"fecha": "2026-09-12"}, config=_config())
+
+    assert "09:00 a 15:00" in resultado
+    assert "18:00 a 23:00" in resultado
+
+
+def test_franjas_ocupadas_sin_horario_configurado_no_agrega_nada_de_mas(monkeypatch):
+    cal = _CalendarioDeMentira(ocupado=[])
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+
+    resultado = franjas_ocupadas.invoke({"fecha": "2026-09-12"}, config=_config())
+
+    assert resultado == "No hay nada ocupado en el calendario el 2026-09-12."
+
+
 def test_franjas_ocupadas_esta_en_la_lista():
     assert franjas_ocupadas in HERRAMIENTAS
 

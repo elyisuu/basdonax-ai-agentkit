@@ -81,6 +81,31 @@ def _franjas_legibles(franjas: list[tuple[time, time]]) -> str:
     )
 
 
+def dia_cerrado(fecha: str, cerrados: str) -> bool:
+    """Si esa fecha cae en uno de los días cerrados."""
+    dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+    return dia.weekday() in dias_cerrados(cerrados)
+
+
+def descripcion(desde: str, hasta: str, franjas: str) -> str:
+    """Una frase con el horario de atención, para que franjas_ocupadas se
+    la sume al modelo — sin esto, el modelo puede ofrecer un horario que
+    el calendario tiene libre pero que en realidad cae fuera de atención
+    (por ejemplo, en el corte de un horario partido). Cadena vacía si no
+    hay nada configurado.
+    """
+    lista = franjas_de(franjas)
+    if lista:
+        return f"Atiende de {_franjas_legibles(lista)}."
+    if desde and hasta:
+        return f"Atiende de {desde} a {hasta}."
+    if desde:
+        return f"Atiende desde las {desde}."
+    if hasta:
+        return f"Atiende hasta las {hasta}."
+    return ""
+
+
 def validar(
     fecha: str,
     hora: str,
