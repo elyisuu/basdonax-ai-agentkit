@@ -27,7 +27,6 @@ invisible para quien lo mira en Calendar) — ver calendario.ya_recordado().
 
 from __future__ import annotations
 
-import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,7 +37,11 @@ from agente.consola import preparar  # noqa: E402
 
 preparar()  # antes de imprimir nada, para que las tildes no rompan Windows
 
-from agente.calendario import Calendario, ya_recordado  # noqa: E402
+from agente.calendario import (  # noqa: E402
+    Calendario,
+    conversacion_del_evento,
+    ya_recordado,
+)
 from agente.canales.chatwoot import Chatwoot  # noqa: E402
 from agente.config import Config  # noqa: E402
 
@@ -46,8 +49,6 @@ AMBAR = "\033[38;5;214m"
 GRIS = "\033[90m"
 ROJO = "\033[91m"
 FIN = "\033[0m"
-
-_RE_CONVERSACION = re.compile(r"^Conversaci[oó]n:\s*(\S+)", re.MULTILINE)
 
 
 def main() -> int:
@@ -88,7 +89,7 @@ def main() -> int:
         if not deberia_avisar(evento):
             continue
 
-        conversacion = conversacion_del_evento(evento)
+        conversacion = conversacion_del_evento(evento)  # deberia_avisar() ya confirmó que no es None
         inicio = datetime.fromisoformat(evento["start"]["dateTime"]).astimezone(calendario.zona)
         mensaje = (
             f"¡Hola! Te recordamos tu turno para el {inicio.strftime('%d/%m')} "
@@ -108,14 +109,6 @@ def main() -> int:
 
     print(f"{GRIS}{avisados} de {len(eventos)} turno(s) en la ventana.{FIN}")
     return 0
-
-
-def conversacion_del_evento(evento: dict) -> str | None:
-    """El id de conversación que anotar_reserva() dejó en la descripción,
-    o None si el evento no tiene esa línea (uno cargado a mano, por ejemplo).
-    """
-    coincidencia = _RE_CONVERSACION.search(evento.get("description") or "")
-    return coincidencia.group(1) if coincidencia else None
 
 
 def deberia_avisar(evento: dict) -> bool:

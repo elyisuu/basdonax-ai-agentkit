@@ -535,6 +535,27 @@ default) es sin restricción — se comporta como antes de esto.
 propósito: es lo que los tests reemplazan por un valor fijo, en vez de
 pelearse con la hora real de la máquina que corre el test.
 
+## De quién es el turno (no dejar cancelar el de otra persona)
+
+`cancelar_mi_reserva` y `reprogramar_mi_reserva` buscan el evento por fecha
+y hora (`Calendario.evento_en()`) — nada más, al principio. Eso significa
+que si dos personas distintas dan la misma fecha y hora (por casualidad, o
+alguien probando), cualquiera podía cancelar el turno de la otra. Se
+arregla comparando la conversación que pide cancelar contra la que quedó
+guardada en el evento (`conversacion_del_evento()`, en `calendario.py` —
+la misma función que usa `recordatorios.py`):
+
+- **Coinciden, o el turno no tiene esa marca guardada** (uno cargado a
+  mano en Calendar, o de antes de que existiera esta protección) → se
+  deja pasar. No cortar reservas viejas que hoy andan bien es más
+  importante que blindar un caso raro.
+- **No coinciden** → se rechaza, con un mensaje para que el modelo le
+  avise a la persona que se comunique directo con el negocio.
+
+`_chequear_propietario()` (`herramientas.py`) es la que decide esto; se
+llama ANTES que `_chequear_anticipacion()`, así el mensaje que ve la
+persona es el correcto según cuál de las dos cosas falló.
+
 ## Recordatorios automáticos
 
 `recordatorios.py` (raíz del repo) — un programa que corre, avisa lo que

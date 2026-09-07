@@ -28,6 +28,7 @@ El flujo para hablar con la API, de punta a punta:
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -315,7 +316,22 @@ class Calendario:
         return json.loads(cuerpo_resp) if cuerpo_resp else {}
 
 
-# -- Ayudantes para recordatorios.py ------------------------------------------
+# -- Ayudantes: leer datos que anotar_reserva() dejó en la descripción --------
+
+_RE_CONVERSACION = re.compile(r"^Conversaci[oó]n:\s*(\S+)", re.MULTILINE)
+
+
+def conversacion_del_evento(evento: dict) -> str | None:
+    """El id de conversación que anotar_reserva() dejó en la descripción del
+    evento, o None si no tiene esa línea — un turno cargado a mano en
+    Calendar, o uno de antes de que existiera esta marca.
+
+    La usan recordatorios.py (para saber a quién avisarle) y
+    cancelar_mi_reserva/reprogramar_mi_reserva en herramientas.py (para no
+    dejar que una conversación cancele o mueva el turno de otra).
+    """
+    coincidencia = _RE_CONVERSACION.search(evento.get("description") or "")
+    return coincidencia.group(1) if coincidencia else None
 
 
 def ya_recordado(evento: dict) -> bool:

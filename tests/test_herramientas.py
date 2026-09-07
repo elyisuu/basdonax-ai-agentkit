@@ -699,6 +699,57 @@ def test_cancelar_mi_reserva_la_encuentra_y_cancela(monkeypatch):
     assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA_CANCELADA)]
 
 
+def test_cancelar_mi_reserva_no_toca_el_turno_de_otra_conversacion(monkeypatch):
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Ana (2p)", "Nombre: Ana\nConversación: 99", inicio, fin)
+
+    # config() usa thread_id="42" por defecto — distinto del dueño del turno.
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "no está anotado en esta conversación" in resultado.lower()
+    assert cal.cancelados == [], "no se puede cancelar el turno de otra persona"
+
+
+def test_cancelar_mi_reserva_permite_su_propio_turno(monkeypatch):
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan\nConversación: 42", inicio, fin)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config(thread_id="42")
+    )
+
+    assert "cancelé" in resultado.lower()
+    assert cal.cancelados == ["evento-1"]
+
+
+def test_cancelar_mi_reserva_permite_turnos_sin_conversacion_guardada(monkeypatch):
+    """Reservas de antes de esta protección (o cargadas a mano en Calendar)
+    no tienen la línea "Conversación:" — no cortarlas de raíz."""
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan", inicio, fin)  # sin "Conversación:"
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "cancelé" in resultado.lower()
+    assert cal.cancelados == ["evento-1"]
+
+
 def test_cancelar_mi_reserva_rechaza_dentro_de_la_anticipacion_minima(monkeypatch):
     cal = _CalendarioDeMentira()
     monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
@@ -811,6 +862,28 @@ def test_reprogramar_mi_reserva_que_no_existe(monkeypatch):
     )
 
     assert "no encontré" in resultado.lower()
+
+
+def test_reprogramar_mi_reserva_no_toca_el_turno_de_otra_conversacion(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Ana (2p)", "Nombre: Ana\nConversación: 99", inicio, fin)
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),  # thread_id="42", distinto del dueño del turno
+    )
+
+    assert "no está anotado en esta conversación" in resultado.lower()
+    assert cal.cancelados == [], "no se puede mover el turno de otra persona"
 
 
 def test_reprogramar_mi_reserva_rechaza_dentro_de_la_anticipacion_minima(monkeypatch):

@@ -65,7 +65,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from . import aprobacion, horario
-from .calendario import Calendario
+from .calendario import Calendario, conversacion_del_evento
 from .canales.chatwoot import Chatwoot
 from .config import Config
 
@@ -386,9 +386,11 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
     avise que no va a poder ir. Necesitás la fecha y hora CON LA QUE SE
     ANOTÓ originalmente — si no las tenés claras, preguntaselas antes de
     llamar a esta herramienta. Solo funciona con Google Calendar conectado:
-    es ahí donde se busca el turno. Si el negocio pide un mínimo de
-    anticipación (CANCELACION_HORAS_MINIMAS) y el turno es antes de eso, no
-    cancela — le decís a la persona que hable directo con el negocio.
+    es ahí donde se busca el turno, y solo cancela el que corresponda a
+    ESTA conversación (no el de otra persona que caiga en la misma fecha y
+    hora). Si el negocio pide un mínimo de anticipación
+    (CANCELACION_HORAS_MINIMAS) y el turno es antes de eso, no cancela —
+    le decís a la persona que hable directo con el negocio.
 
     Args:
         fecha: La fecha original de la reserva, en formato AAAA-MM-DD.
@@ -402,6 +404,8 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
             "Google Calendar configurado."
         )
 
+    conversacion = _conversacion_de(config)
+
     try:
         inicio, _ = calendario.rango(fecha, hora, 1)
         evento = calendario.evento_en(inicio)
@@ -411,6 +415,10 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
                 "Puede que ya se haya cancelado, o que el dato esté mal —"
                 " confirmá la fecha y hora con la persona."
             )
+
+        mensaje_ajena = _chequear_propietario(evento, conversacion, fecha, hora)
+        if mensaje_ajena:
+            return mensaje_ajena
 
         mensaje_anticipacion = _chequear_anticipacion(evento, ajustes)
         if mensaje_anticipacion:
@@ -443,9 +451,11 @@ def reprogramar_mi_reserva(
     franjas_ocupadas para confirmar que el horario nuevo esté libre — igual
     se revisa acá adentro, pero avisarle a la persona de una es mejor que
     hacerle preguntar dos veces. Solo funciona con Google Calendar
-    conectado. Si el negocio pide un mínimo de anticipación
-    (CANCELACION_HORAS_MINIMAS) y el turno actual es antes de eso, no lo
-    mueve — le decís a la persona que hable directo con el negocio.
+    conectado, y solo mueve el turno que corresponda a ESTA conversación
+    (no el de otra persona que caiga en la misma fecha y hora). Si el
+    negocio pide un mínimo de anticipación (CANCELACION_HORAS_MINIMAS) y
+    el turno actual es antes de eso, no lo mueve — le decís a la persona
+    que hable directo con el negocio.
 
     Args:
         fecha_actual: La fecha con la que se anotó la reserva, AAAA-MM-DD.
@@ -461,6 +471,8 @@ def reprogramar_mi_reserva(
             "Google Calendar configurado."
         )
 
+    conversacion = _conversacion_de(config)
+
     try:
         inicio_actual, _ = calendario.rango(fecha_actual, hora_actual, 1)
         evento = calendario.evento_en(inicio_actual)
@@ -469,6 +481,10 @@ def reprogramar_mi_reserva(
                 f"No encontré ninguna reserva para el {fecha_actual} a las "
                 f"{hora_actual}. Confirmá la fecha y hora con la persona."
             )
+
+        mensaje_ajena = _chequear_propietario(evento, conversacion, fecha_actual, hora_actual)
+        if mensaje_ajena:
+            return mensaje_ajena
 
         mensaje_anticipacion = _chequear_anticipacion(evento, ajustes)
         if mensaje_anticipacion:
@@ -674,6 +690,32 @@ def _chequear_anticipacion(evento: dict, ajustes: Config) -> str | None:
         f"Ese turno es en menos de {ajustes.cancelacion_horas_minimas} horas: "
         "no se puede cancelar ni mover solo por acá. Decile a la persona "
         "que se comunique directo con el negocio."
+    )
+
+
+def _chequear_propietario(
+    evento: dict, conversacion: str, fecha: str, hora: str
+) -> str | None:
+    """None si esta conversación puede cancelar/mover ese turno; si no, el
+    mensaje para el modelo.
+
+    El turno guarda de quién es en su descripción ("Conversación: <id>",
+    ver conversacion_del_evento). Sin esto, cualquiera que acierte la
+    fecha y hora exactas de OTRA persona podría cancelarle el turno.
+
+    Un turno SIN esa marca (uno cargado a mano en Calendar, o de antes de
+    que existiera esta protección) se deja pasar: no hay con qué comparar,
+    y cortarlo de raíz rompería reservas viejas que hoy funcionan bien.
+    """
+    propietario = conversacion_del_evento(evento)
+    if not conversacion or not propietario or propietario == conversacion:
+        return None
+
+    return (
+        f"Ese turno del {fecha} a las {hora} no está anotado en esta "
+        "conversación — no lo puedo cancelar ni mover desde acá. Si la "
+        "persona insiste en que es suyo, decile que se comunique directo "
+        "con el negocio."
     )
 
 

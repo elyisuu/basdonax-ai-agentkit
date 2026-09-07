@@ -23,7 +23,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa as rsa_crypto
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agente.calendario import Calendario, ErrorDeCalendario, ya_recordado  # noqa: E402
+from agente.calendario import (  # noqa: E402
+    Calendario,
+    ErrorDeCalendario,
+    conversacion_del_evento,
+    ya_recordado,
+)
 
 
 def _cuenta_de_servicio_de_prueba() -> str:
@@ -293,6 +298,20 @@ def test_ya_recordado_sin_marca_es_false():
     assert ya_recordado({}) is False
     assert ya_recordado({"extendedProperties": {"private": {}}}) is False
     assert ya_recordado({"extendedProperties": {"private": {"recordatorio_enviado": "false"}}}) is False
+
+
+def test_conversacion_del_evento_la_encuentra():
+    evento = {"description": "Nombre: Juan\nConversación: 42"}
+    assert conversacion_del_evento(evento) == "42"
+
+
+def test_conversacion_del_evento_sin_tilde():
+    assert conversacion_del_evento({"description": "Conversacion: 7"}) == "7"
+
+
+def test_conversacion_del_evento_sin_esa_linea_es_none():
+    assert conversacion_del_evento({"description": "Nombre: Juan"}) is None
+    assert conversacion_del_evento({}) is None
 
 
 # -- Aprobar y cancelar -------------------------------------------------------------
