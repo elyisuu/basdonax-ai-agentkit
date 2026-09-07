@@ -99,9 +99,14 @@ class Config:
     reserva_secreto: str = ""
 
     # -- Horario de atención: solo lo mira anotar_reserva() -----------------
-    # HH:MM, 24 horas. Vacío (el default) = sin restricción de horario.
+    # HH:MM, 24 horas. Vacío (el default) = sin restricción de horario. Para
+    # un solo turno corrido (el caso simple); si el negocio tiene horario
+    # partido, usar horario_franjas en cambio.
     horario_desde: str = ""
     horario_hasta: str = ""
+    # "09:00-15:00, 18:00-23:00" — para horario partido (con un corte al
+    # medio). Si tiene algo, manda por sobre horario_desde/horario_hasta.
+    horario_franjas: str = ""
     # Nombres de días en castellano separados por coma, p. ej. "domingo" o
     # "lunes, domingo". Vacío (el default) = ningún día cerrado.
     dias_cerrados: str = ""
@@ -178,6 +183,7 @@ class Config:
             reserva_secreto=(os.getenv("RESERVA_SECRETO") or "").strip(),
             horario_desde=(os.getenv("HORARIO_DESDE") or "").strip(),
             horario_hasta=(os.getenv("HORARIO_HASTA") or "").strip(),
+            horario_franjas=(os.getenv("HORARIO_FRANJAS") or "").strip(),
             dias_cerrados=(os.getenv("DIAS_CERRADOS") or "").strip(),
         )
 

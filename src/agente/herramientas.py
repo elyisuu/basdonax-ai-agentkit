@@ -244,7 +244,12 @@ def anotar_reserva(
 
     try:
         horario.validar(
-            fecha, hora, ajustes.horario_desde, ajustes.horario_hasta, ajustes.dias_cerrados
+            fecha,
+            hora,
+            ajustes.horario_desde,
+            ajustes.horario_hasta,
+            ajustes.dias_cerrados,
+            ajustes.horario_franjas,
         )
     except horario.ErrorDeHorario as e:
         return str(e)

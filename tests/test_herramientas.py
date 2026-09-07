@@ -236,6 +236,7 @@ class _AjustesDeMentira:
         reserva_secreto="",
         horario_desde="",
         horario_hasta="",
+        horario_franjas="",
         dias_cerrados="",
     ) -> None:
         self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
@@ -243,6 +244,7 @@ class _AjustesDeMentira:
         self.reserva_secreto = reserva_secreto
         self.horario_desde = horario_desde
         self.horario_hasta = horario_hasta
+        self.horario_franjas = horario_franjas
         self.dias_cerrados = dias_cerrados
 
 
@@ -282,12 +284,15 @@ def _con_aprobacion(monkeypatch, url_publica="", reserva_secreto="") -> None:
     )
 
 
-def _con_horario(monkeypatch, desde="", hasta="", cerrados="") -> None:
+def _con_horario(monkeypatch, desde="", hasta="", cerrados="", franjas="") -> None:
     monkeypatch.setattr(
         herramientas,
         "_ajustes_del_config",
         lambda config: _AjustesDeMentira(
-            horario_desde=desde, horario_hasta=hasta, dias_cerrados=cerrados
+            horario_desde=desde,
+            horario_hasta=hasta,
+            dias_cerrados=cerrados,
+            horario_franjas=franjas,
         ),
     )
 
@@ -575,6 +580,35 @@ def test_sin_horario_configurado_no_restringe_nada(monkeypatch):
     )
 
     assert "pendiente" in resultado.lower()
+
+
+def test_horario_partido_rechaza_el_corte_del_medio(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+    _con_horario(monkeypatch, franjas="09:00-15:00, 18:00-23:00")
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "16:00"},
+        config=_config(),
+    )
+
+    assert "09:00 a 15:00" in resultado
+    assert chatwoot.notas == []
+
+
+def test_horario_partido_acepta_los_dos_turnos(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+    _con_horario(monkeypatch, franjas="09:00-15:00, 18:00-23:00")
+
+    for hora in ("10:00", "20:00"):
+        resultado = anotar_reserva.invoke(
+            {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": hora},
+            config=_config(),
+        )
+        assert "pendiente" in resultado.lower()
 
 
 def test_dentro_del_horario_sigue_andando(monkeypatch):

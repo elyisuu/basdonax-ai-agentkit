@@ -471,13 +471,20 @@ que aprobar o rechazar directo en Google Calendar a mano.
 
 ## Horario de atención
 
-`HORARIO_DESDE`, `HORARIO_HASTA` y `DIAS_CERRADOS` en el `.env`
+`HORARIO_DESDE`/`HORARIO_HASTA` (un turno corrido), `HORARIO_FRANJAS`
+(horario partido, con un corte al medio) y `DIAS_CERRADOS` en el `.env`
 (`horario.py`). Antes de esto, el modelo solo sabía qué horario atendía el
 negocio por lo que decía su propio prompt (`prompts/sistema.md`) — nada se
 lo hacía cumplir de verdad. `anotar_reserva` ahora valida `(fecha, hora)`
-contra estas tres variables ANTES de tocar Chatwoot o el calendario. Las
-tres son opcionales y vacías por defecto: sin nada configurado, no hay
-ninguna restricción — igual que antes de que existiera `horario.py`.
+contra esto ANTES de tocar Chatwoot o el calendario. Todo es opcional y
+vacío por defecto: sin nada configurado, no hay ninguna restricción —
+igual que antes de que existiera `horario.py`.
+
+`HORARIO_FRANJAS` es para cuando el negocio cierra al mediodía y vuelve a
+abrir más tarde (`09:00-15:00,18:00-23:00`): si tiene algo puesto, manda
+por sobre `HORARIO_DESDE`/`HORARIO_HASTA` — alcanza con que la hora caiga
+en CUALQUIERA de las franjas. Sin `HORARIO_FRANJAS`, se usa el rango único
+de siempre (un solo turno corrido).
 
 ## Cancelar y reprogramar mi propia reserva
 

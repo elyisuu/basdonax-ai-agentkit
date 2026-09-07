@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import time
 from pathlib import Path
 
 import pytest
@@ -70,3 +71,42 @@ def test_solo_hasta_sin_desde():
 
     with pytest.raises(horario.ErrorDeHorario):
         horario.validar("2026-09-12", "23:00", "", "20:00", "")
+
+
+# -- Horario partido (franjas) ------------------------------------------------------
+
+
+def test_franjas_de_parsea_pares_separados_por_coma():
+    assert horario.franjas_de("09:00-15:00, 18:00-23:00") == [
+        (time(9, 0), time(15, 0)),
+        (time(18, 0), time(23, 0)),
+    ]
+
+
+def test_franjas_de_ignora_lo_que_no_entiende():
+    """Mejor una franja menos que romper el arranque por un typo."""
+    assert horario.franjas_de("09:00-15:00, esto no es una franja") == [
+        (time(9, 0), time(15, 0))
+    ]
+    assert horario.franjas_de("") == []
+
+
+def test_dentro_de_alguna_franja_no_explota():
+    horario.validar("2026-09-12", "12:00", franjas="09:00-15:00, 18:00-23:00")
+    horario.validar("2026-09-12", "20:00", franjas="09:00-15:00, 18:00-23:00")
+
+
+def test_en_el_corte_entre_franjas_explota():
+    with pytest.raises(horario.ErrorDeHorario, match="09:00 a 15:00"):
+        horario.validar("2026-09-12", "16:30", franjas="09:00-15:00, 18:00-23:00")
+
+
+def test_franjas_manda_por_sobre_desde_hasta():
+    """Si hay franjas puestas, un desde/hasta viejo no interfiere."""
+    horario.validar(
+        "2026-09-12",
+        "20:00",
+        desde="00:00",
+        hasta="01:00",  # esto solo, sin franjas, rechazaría las 20:00
+        franjas="09:00-15:00, 18:00-23:00",
+    )
