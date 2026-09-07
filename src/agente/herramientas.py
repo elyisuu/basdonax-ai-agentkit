@@ -274,6 +274,7 @@ def anotar_reserva(
         return str(e)
 
     chatwoot = _chatwoot_del_config(config)
+    conversacion = _conversacion_de(config)
 
     detalle = [
         f"Nombre: {nombre}",
@@ -286,6 +287,15 @@ def anotar_reserva(
     if aclaracion:
         detalle.append(f"Aclaración: {aclaracion}")
     texto_detalle = "\n".join(detalle)
+
+    # La descripción que va al CALENDARIO lleva además la conversación —
+    # así recordatorios.py puede, más adelante, encontrar a quién avisarle
+    # sin necesitar guardar esa relación en ningún otro lado. No va en la
+    # nota de Chatwoot: ahí la lee una persona, y el id de conversación no
+    # le dice nada útil.
+    descripcion_calendario = texto_detalle
+    if conversacion:
+        descripcion_calendario += f"\nConversación: {conversacion}"
 
     confirmada = False
     evento_pendiente_id: str | None = None
@@ -306,7 +316,7 @@ def anotar_reserva(
 
             evento = calendario.crear_evento(
                 titulo=f"{nombre} ({personas}p)",
-                descripcion=texto_detalle,
+                descripcion=descripcion_calendario,
                 inicio=inicio,
                 fin=fin,
                 estado="tentative" if requiere_aprobacion else "confirmed",
@@ -327,7 +337,6 @@ def anotar_reserva(
         )
 
     if chatwoot is not None:
-        conversacion = _conversacion_de(config)
         if conversacion:
             nota = "Reserva\n" + texto_detalle
             etiqueta = ETIQUETA_RESERVA
@@ -377,12 +386,15 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
     avise que no va a poder ir. Necesitás la fecha y hora CON LA QUE SE
     ANOTÓ originalmente — si no las tenés claras, preguntaselas antes de
     llamar a esta herramienta. Solo funciona con Google Calendar conectado:
-    es ahí donde se busca el turno.
+    es ahí donde se busca el turno. Si el negocio pide un mínimo de
+    anticipación (CANCELACION_HORAS_MINIMAS) y el turno es antes de eso, no
+    cancela — le decís a la persona que hable directo con el negocio.
 
     Args:
         fecha: La fecha original de la reserva, en formato AAAA-MM-DD.
         hora: La hora original, en formato HH:MM (24 horas).
     """
+    ajustes = _ajustes_del_config(config)
     calendario = _calendario_del_config(config)
     if calendario is None:
         return (
@@ -399,6 +411,11 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
                 "Puede que ya se haya cancelado, o que el dato esté mal —"
                 " confirmá la fecha y hora con la persona."
             )
+
+        mensaje_anticipacion = _chequear_anticipacion(evento, ajustes)
+        if mensaje_anticipacion:
+            return mensaje_anticipacion
+
         calendario.cancelar_evento(evento["id"])
     except Exception as e:
         return f"No se pudo cancelar la reserva: {type(e).__name__}: {e}"
@@ -426,7 +443,9 @@ def reprogramar_mi_reserva(
     franjas_ocupadas para confirmar que el horario nuevo esté libre — igual
     se revisa acá adentro, pero avisarle a la persona de una es mejor que
     hacerle preguntar dos veces. Solo funciona con Google Calendar
-    conectado.
+    conectado. Si el negocio pide un mínimo de anticipación
+    (CANCELACION_HORAS_MINIMAS) y el turno actual es antes de eso, no lo
+    mueve — le decís a la persona que hable directo con el negocio.
 
     Args:
         fecha_actual: La fecha con la que se anotó la reserva, AAAA-MM-DD.
@@ -434,6 +453,7 @@ def reprogramar_mi_reserva(
         fecha_nueva: La fecha nueva pedida, AAAA-MM-DD.
         hora_nueva: La hora nueva pedida, HH:MM (24 horas).
     """
+    ajustes = _ajustes_del_config(config)
     calendario = _calendario_del_config(config)
     if calendario is None:
         return (
@@ -449,6 +469,10 @@ def reprogramar_mi_reserva(
                 f"No encontré ninguna reserva para el {fecha_actual} a las "
                 f"{hora_actual}. Confirmá la fecha y hora con la persona."
             )
+
+        mensaje_anticipacion = _chequear_anticipacion(evento, ajustes)
+        if mensaje_anticipacion:
+            return mensaje_anticipacion
 
         duracion = _duracion_minutos(evento)
         inicio_nuevo, fin_nuevo = calendario.rango(fecha_nueva, hora_nueva, duracion)
@@ -619,6 +643,38 @@ def _duracion_minutos(evento: dict) -> int:
     inicio = datetime.fromisoformat(evento["start"]["dateTime"])
     fin = datetime.fromisoformat(evento["end"]["dateTime"])
     return max(1, int((fin - inicio).total_seconds() // 60))
+
+
+def _horas_hasta_el_turno(evento: dict) -> float:
+    """Cuántas horas faltan, desde ahora, para que empiece ese turno.
+
+    Función aparte (en vez de un datetime.now() metido adentro de
+    cancelar_mi_reserva) para que los tests puedan reemplazarla por un
+    valor fijo sin pelearse con la hora real de la máquina que corre el
+    test.
+    """
+    inicio = datetime.fromisoformat(evento["start"]["dateTime"])
+    ahora = datetime.now(inicio.tzinfo)
+    return (inicio - ahora).total_seconds() / 3600
+
+
+def _chequear_anticipacion(evento: dict, ajustes: Config) -> str | None:
+    """None si se puede cancelar/reprogramar; si no, el mensaje para el modelo.
+
+    CANCELACION_HORAS_MINIMAS en 0 (el default) es "sin restricción" — ni
+    siquiera se calculan las horas que faltan.
+    """
+    if ajustes.cancelacion_horas_minimas <= 0:
+        return None
+
+    if _horas_hasta_el_turno(evento) >= ajustes.cancelacion_horas_minimas:
+        return None
+
+    return (
+        f"Ese turno es en menos de {ajustes.cancelacion_horas_minimas} horas: "
+        "no se puede cancelar ni mover solo por acá. Decile a la persona "
+        "que se comunique directo con el negocio."
+    )
 
 
 def _ajustes_del_config(config: RunnableConfig) -> Config:

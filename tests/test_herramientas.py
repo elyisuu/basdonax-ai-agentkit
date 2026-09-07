@@ -238,6 +238,7 @@ class _AjustesDeMentira:
         horario_hasta="",
         horario_franjas="",
         dias_cerrados="",
+        cancelacion_horas_minimas=0,
     ) -> None:
         self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
         self.url_publica = url_publica
@@ -246,6 +247,7 @@ class _AjustesDeMentira:
         self.horario_hasta = horario_hasta
         self.horario_franjas = horario_franjas
         self.dias_cerrados = dias_cerrados
+        self.cancelacion_horas_minimas = cancelacion_horas_minimas
 
 
 @pytest.fixture(autouse=True)
@@ -281,6 +283,14 @@ def _con_aprobacion(monkeypatch, url_publica="", reserva_secreto="") -> None:
             url_publica=url_publica,
             reserva_secreto=reserva_secreto,
         ),
+    )
+
+
+def _con_cancelacion(monkeypatch, horas_minimas) -> None:
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(cancelacion_horas_minimas=horas_minimas),
     )
 
 
@@ -384,6 +394,25 @@ def test_con_calendario_libre_confirma_el_turno(monkeypatch):
     assert cal.eventos[0]["titulo"] == "Ana (1p)"
     # También le queda una constancia al equipo en la bandeja de Chatwoot.
     assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA)]
+
+
+def test_la_descripcion_del_calendario_lleva_la_conversacion(monkeypatch):
+    """recordatorios.py la necesita para saber a quién avisarle — sin
+    guardar esa relación en ningún otro lado."""
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    _sin_aprobacion(monkeypatch)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(thread_id="42"),
+    )
+
+    assert "Conversación: 42" in cal.eventos[0]["descripcion"]
+    # La nota de Chatwoot es para una persona: no le suma nada este dato.
+    assert "Conversación:" not in chatwoot.notas[0][1]
 
 
 def test_con_calendario_ocupado_no_confirma_y_no_crea_el_evento(monkeypatch):
@@ -670,6 +699,63 @@ def test_cancelar_mi_reserva_la_encuentra_y_cancela(monkeypatch):
     assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA_CANCELADA)]
 
 
+def test_cancelar_mi_reserva_rechaza_dentro_de_la_anticipacion_minima(monkeypatch):
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+    _con_cancelacion(monkeypatch, horas_minimas=24)
+    monkeypatch.setattr(herramientas, "_horas_hasta_el_turno", lambda evento: 2.0)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "...", inicio, fin)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "menos de 24 horas" in resultado
+    assert cal.cancelados == [], "no se puede cancelar dentro de la anticipación mínima"
+
+
+def test_cancelar_mi_reserva_permite_fuera_de_la_anticipacion_minima(monkeypatch):
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+    _con_cancelacion(monkeypatch, horas_minimas=24)
+    monkeypatch.setattr(herramientas, "_horas_hasta_el_turno", lambda evento: 48.0)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "...", inicio, fin)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "cancelé" in resultado.lower()
+    assert cal.cancelados == ["evento-1"]
+
+
+def test_cancelar_mi_reserva_sin_politica_no_chequea_nada(monkeypatch):
+    """CANCELACION_HORAS_MINIMAS=0 (el default) es "sin restricción"."""
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    def explota(evento):
+        raise AssertionError("no debería calcularse nada con la política en 0")
+
+    monkeypatch.setattr(herramientas, "_horas_hasta_el_turno", explota)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "...", inicio, fin)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "cancelé" in resultado.lower()
+
+
 def test_cancelar_mi_reserva_no_falla_si_chatwoot_no_esta(monkeypatch):
     """El calendario ya es la fuente de la verdad acá: un aviso que no
     sale a la bandeja no puede voltear una cancelación que sí se hizo."""
@@ -725,6 +811,30 @@ def test_reprogramar_mi_reserva_que_no_existe(monkeypatch):
     )
 
     assert "no encontré" in resultado.lower()
+
+
+def test_reprogramar_mi_reserva_rechaza_dentro_de_la_anticipacion_minima(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+    _con_cancelacion(monkeypatch, horas_minimas=24)
+    monkeypatch.setattr(herramientas, "_horas_hasta_el_turno", lambda evento: 2.0)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "...", inicio, fin)
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    assert "menos de 24 horas" in resultado
+    assert cal.cancelados == [], "no se puede mover dentro de la anticipación mínima"
 
 
 def test_reprogramar_mi_reserva_mueve_el_turno_y_conserva_los_datos(monkeypatch):

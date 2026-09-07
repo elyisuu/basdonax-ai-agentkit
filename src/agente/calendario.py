@@ -188,6 +188,37 @@ class Calendario:
             },
         )
 
+    def eventos_entre(self, desde: datetime, hasta: datetime) -> list[dict]:
+        """Los eventos (no cancelados) que empiezan en ese rango.
+
+        La usa recordatorios.py: en vez de guardar en algún lado qué turnos
+        hay, cada corrida barre el calendario buscando los que están por
+        empezar.
+        """
+        respuesta = self._api(
+            "GET",
+            f"calendars/{urllib.parse.quote(self.calendario_id, safe='')}"
+            f"/events?singleEvents=true&orderBy=startTime"
+            f"&timeMin={urllib.parse.quote(desde.isoformat())}"
+            f"&timeMax={urllib.parse.quote(hasta.isoformat())}",
+        )
+        return respuesta.get("items") or []
+
+    def marcar_recordado(self, evento_id: str) -> dict:
+        """Deja una marca en el evento para no mandar el mismo recordatorio
+        dos veces.
+
+        Va en extendedProperties.private: Google no la muestra en ningún
+        lado visible, así que no ensucia el evento para quien lo mira desde
+        Calendar. Ver ya_recordado() para leerla de vuelta.
+        """
+        return self._api(
+            "PATCH",
+            f"calendars/{urllib.parse.quote(self.calendario_id, safe='')}"
+            f"/events/{urllib.parse.quote(evento_id, safe='')}",
+            {"extendedProperties": {"private": {"recordatorio_enviado": "true"}}},
+        )
+
     def aprobar_evento(self, evento_id: str) -> dict:
         """Pasa un turno "tentative" a "confirmed": la aprobación del negocio."""
         return self._api(
@@ -282,3 +313,16 @@ class Calendario:
             ) from None
 
         return json.loads(cuerpo_resp) if cuerpo_resp else {}
+
+
+# -- Ayudantes para recordatorios.py ------------------------------------------
+
+
+def ya_recordado(evento: dict) -> bool:
+    """Si a este evento ya se le mandó el recordatorio (ver marcar_recordado).
+
+    Función de módulo y no un método porque no necesita autenticarse contra
+    nada: solo mira el dict que ya devolvió eventos_entre().
+    """
+    propiedades = (evento.get("extendedProperties") or {}).get("private") or {}
+    return propiedades.get("recordatorio_enviado") == "true"

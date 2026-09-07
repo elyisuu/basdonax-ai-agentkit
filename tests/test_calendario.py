@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa as rsa_crypto
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agente.calendario import Calendario, ErrorDeCalendario  # noqa: E402
+from agente.calendario import Calendario, ErrorDeCalendario, ya_recordado  # noqa: E402
 
 
 def _cuenta_de_servicio_de_prueba() -> str:
@@ -232,6 +232,67 @@ def test_evento_en_devuelve_none_si_no_hay_nada(monkeypatch):
 
     inicio = datetime(2026, 9, 12, 21, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
     assert cal.evento_en(inicio) is None
+
+
+# -- Recordatorios (recordatorios.py) ----------------------------------------------
+
+
+def test_eventos_entre_consulta_por_get_con_el_rango():
+    cal = CalendarioFalso()
+    desde = datetime(2026, 9, 12, 0, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+    hasta = desde.replace(hour=1)
+
+    cal.eventos_entre(desde, hasta)
+
+    pedido = cal.llamadas[0]
+    assert pedido["metodo"] == "GET"
+    assert pedido["camino"].startswith(
+        "calendars/negocio%40group.calendar.google.com/events?singleEvents=true"
+    )
+
+
+def test_eventos_entre_devuelve_los_items(monkeypatch):
+    cal = CalendarioFalso()
+    monkeypatch.setattr(
+        cal, "_api", lambda metodo, camino, cuerpo=None: {"items": [{"id": "e1"}, {"id": "e2"}]}
+    )
+    desde = datetime(2026, 9, 12, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+
+    assert cal.eventos_entre(desde, desde) == [{"id": "e1"}, {"id": "e2"}]
+
+
+def test_eventos_entre_sin_nada_devuelve_lista_vacia(monkeypatch):
+    cal = CalendarioFalso()
+    monkeypatch.setattr(cal, "_api", lambda metodo, camino, cuerpo=None: {"items": []})
+    desde = datetime(2026, 9, 12, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+
+    assert cal.eventos_entre(desde, desde) == []
+
+
+def test_marcar_recordado_manda_extended_properties():
+    cal = CalendarioFalso()
+
+    cal.marcar_recordado("evento-1")
+
+    pedido = cal.llamadas[0]
+    assert pedido["metodo"] == "PATCH"
+    assert pedido["camino"] == (
+        "calendars/negocio%40group.calendar.google.com/events/evento-1"
+    )
+    assert pedido["cuerpo"] == {
+        "extendedProperties": {"private": {"recordatorio_enviado": "true"}}
+    }
+
+
+def test_ya_recordado_lee_la_marca():
+    marcado = {"extendedProperties": {"private": {"recordatorio_enviado": "true"}}}
+    assert ya_recordado(marcado) is True
+
+
+def test_ya_recordado_sin_marca_es_false():
+    assert ya_recordado({}) is False
+    assert ya_recordado({"extendedProperties": {"private": {}}}) is False
+    assert ya_recordado({"extendedProperties": {"private": {"recordatorio_enviado": "false"}}}) is False
 
 
 # -- Aprobar y cancelar -------------------------------------------------------------

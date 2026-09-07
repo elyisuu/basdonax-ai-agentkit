@@ -111,6 +111,20 @@ class Config:
     # "lunes, domingo". Vacío (el default) = ningún día cerrado.
     dias_cerrados: str = ""
 
+    # -- Política de cancelación: la mira cancelar_mi_reserva/reprogramar_mi_reserva
+    # Si el turno es en menos de estas horas, la persona no lo puede
+    # cancelar/mover sola por chat — tiene que hablar directo con el
+    # negocio. 0 (el default) = sin restricción, como antes de esto.
+    cancelacion_horas_minimas: int = 0
+
+    # -- Recordatorios automáticos: los mira recordatorios.py -----------------
+    # Cuántas horas antes del turno se manda el recordatorio por WhatsApp.
+    recordatorio_horas_antes: int = 24
+    # El ancho de la ventana que barre cada corrida, en minutos. Con 24
+    # horas de anticipación y una ventana de 60 minutos, un cron que corre
+    # cada una hora no se salta ningún turno ni avisa el mismo dos veces.
+    recordatorio_ventana_minutos: int = 60
+
     @classmethod
     def desde_entorno(
         cls, proveedor: str | None = None, modelo: str | None = None
@@ -185,6 +199,9 @@ class Config:
             horario_hasta=(os.getenv("HORARIO_HASTA") or "").strip(),
             horario_franjas=(os.getenv("HORARIO_FRANJAS") or "").strip(),
             dias_cerrados=(os.getenv("DIAS_CERRADOS") or "").strip(),
+            cancelacion_horas_minimas=_entero("CANCELACION_HORAS_MINIMAS", 0),
+            recordatorio_horas_antes=_entero("RECORDATORIO_HORAS_ANTES", 24),
+            recordatorio_ventana_minutos=_entero("RECORDATORIO_VENTANA_MINUTOS", 60),
         )
 
 

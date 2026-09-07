@@ -43,6 +43,7 @@ Lo que importa acá es qué hace cada uno:
 | `horario.py` | El horario de atención (`HORARIO_DESDE/HASTA`, `DIAS_CERRADOS`), opcional |
 | `aprobacion.py` | Firma y valida los links de aprobar/rechazar una reserva pendiente |
 | `reintentos.py` | Backoff para las llamadas HTTP a Chatwoot y Google Calendar |
+| `recordatorios.py` | Programa aparte (raíz del repo): recordatorios de turnos por WhatsApp, para dejar programado (Scheduled Task) |
 | `modelos.py` | Crea el modelo y le pregunta al proveedor cuáles tiene |
 | `memoria.py` | Los checkpointers: `ram` / `sqlite` / `postgres` |
 | `prompts.py` | Lee y guarda `prompts/sistema.md` |
@@ -521,6 +522,55 @@ aviso automático (detectar que se liberó el horario y avisarle solo a la
 persona en espera) queda para más adelante: necesitaría poder buscar, por
 contenido, qué conversaciones están esperando ESE horario puntual, y hoy
 no hay dónde guardar esa relación sin sumar una base de datos.
+
+## Política de cancelación
+
+`CANCELACION_HORAS_MINIMAS` en el `.env`. Si el turno es en menos de esas
+horas, `cancelar_mi_reserva` y `reprogramar_mi_reserva` (`herramientas.py`)
+no lo tocan: le avisan a la persona que hable directo con el negocio, en
+vez de dejarle cancelar/mover algo a último momento por chat solo. `0` (el
+default) es sin restricción — se comporta como antes de esto.
+
+`_horas_hasta_el_turno()` está separada de `_chequear_anticipacion()` a
+propósito: es lo que los tests reemplazan por un valor fijo, en vez de
+pelearse con la hora real de la máquina que corre el test.
+
+## Recordatorios automáticos
+
+`recordatorios.py` (raíz del repo) — un programa que corre, avisa lo que
+tenga que avisar por WhatsApp, y termina. No es parte del servidor: la
+idea es dejarlo programado aparte (una **Scheduled Task de Coolify**,
+apuntando a `python recordatorios.py` en el mismo contenedor de
+`agente-whatsapp`, corriendo por ejemplo cada una hora).
+
+Necesita **Google Calendar Y Chatwoot** configurados — el calendario para
+saber qué turnos hay, Chatwoot para saber por dónde avisarle a cada
+persona. Sin alguno de los dos, no hace nada y no tira error: es seguro
+dejarlo programado en cualquier instancia, esté o no armada para esto.
+
+Dos decisiones de diseño que no son obvias:
+
+- **Cómo sabe a quién avisarle, sin una base de datos.** `anotar_reserva()`
+  ahora deja una línea `"Conversación: <id>"` en la **descripción del
+  evento de Calendar** (no en la nota de Chatwoot — ahí la lee una
+  persona, y ese dato no le sirve para nada). `recordatorios.py` la lee de
+  vuelta con una regex. Un turno cargado a mano en Calendar, sin esa
+  línea, se lo salta — no hay a quién avisarle.
+- **Cómo evita avisar el mismo turno dos veces, sin una base de datos.**
+  Al mandar el recordatorio, marca el evento mismo con
+  `Calendario.marcar_recordado()` (`extendedProperties.private`, invisible
+  para quien lo mira en Calendar). La próxima corrida lo salta con
+  `calendario.ya_recordado(evento)`.
+
+No le avisa a un turno **"tentative"** (`RESERVA_REQUIERE_APROBACION`
+todavía sin aprobar) — avisarle a alguien de algo que el negocio puede
+rechazar sería peor que no avisar nada.
+
+`RECORDATORIO_HORAS_ANTES` (cuánta anticipación) y
+`RECORDATORIO_VENTANA_MINUTOS` (el ancho de la ventana que barre cada
+corrida) tienen que llevarse bien con cada cuánto programás la Scheduled
+Task: con una corrida cada hora, la ventana tiene que ser de una hora como
+mínimo para no dejar turnos sin avisar en el medio.
 
 ## Reintentos en Chatwoot y Google Calendar
 
