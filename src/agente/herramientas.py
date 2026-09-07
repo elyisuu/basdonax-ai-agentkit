@@ -6,23 +6,38 @@ y LangGraph la corre y le devuelve el resultado. Por eso el **docstring importa
 tanto como el código**: es literalmente lo único que el modelo lee para decidir
 si esta herramienta le sirve y qué mandarle.
 
-Hay tres:
+Son seis:
 
-  · `clima`             → no necesita nada del canal, funciona en cualquiera.
-  · `franjas_ocupadas`  → lee Google Calendar. Sirve solo si el negocio
-                           conectó un calendario (ver calendario.py).
-  · `anotar_reserva`    → guarda el turno. Si hay calendario conectado, lo
-                           confirma de una (chequea el horario y crea el
-                           evento); si no, deja una nota en Chatwoot
-                           pendiente de que alguien la confirme a mano. Con
-                           RESERVA_REQUIERE_APROBACION, un tercer modo:
-                           calendario conectado pero el turno queda
-                           "tentative" (el horario ya se lo lleva, nadie más
-                           lo puede tomar) hasta que alguien del negocio lo
-                           aprueba con un link. Sirve con cualquiera de los
-                           dos, con los dos, o con ninguno — en ese último
-                           caso avisa que no puede tomar reservas en ese
-                           canal, en vez de fallar.
+  · `clima`                  → no necesita nada del canal, funciona en
+                                cualquiera.
+  · `franjas_ocupadas`       → lee Google Calendar. Sirve solo si el
+                                negocio conectó un calendario.
+  · `anotar_reserva`         → guarda el turno. Si hay calendario
+                                conectado, lo confirma de una (chequea el
+                                horario y crea el evento); si no, deja una
+                                nota en Chatwoot pendiente de que alguien
+                                la confirme a mano. Con
+                                RESERVA_REQUIERE_APROBACION, un tercer
+                                modo: calendario conectado pero el turno
+                                queda "tentative" hasta que alguien del
+                                negocio lo aprueba con un link. Antes de
+                                todo esto, valida HORARIO_DESDE/HASTA y
+                                DIAS_CERRADOS si están puestos. Sirve con
+                                cualquiera de calendario/Chatwoot, con los
+                                dos, o con ninguno — en ese último caso
+                                avisa que no puede tomar reservas en ese
+                                canal, en vez de fallar.
+  · `cancelar_mi_reserva`    → cancela un turno ya anotado en ESTA
+                                conversación. Necesita calendario conectado
+                                (busca el evento por horario, no guarda su
+                                id en ningún lado).
+  · `reprogramar_mi_reserva` → mueve un turno ya anotado a otro día u
+                                horario. Mismo requisito que la anterior.
+  · `anotar_lista_espera`    → cuando el horario pedido está ocupado y la
+                                persona prefiere esperar a que se libere en
+                                vez de elegir otro. Deja una nota en
+                                Chatwoot para que el equipo avise a mano si
+                                se libera — no hay re-aviso automático.
 
 `clima` usa **Open-Meteo** (https://open-meteo.com), que es gratis, no pide
 registro y no usa clave de API. Eso es a propósito: este repo es para probar
@@ -44,11 +59,12 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from datetime import datetime
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from . import aprobacion
+from . import aprobacion, horario
 from .calendario import Calendario
 from .canales.chatwoot import Chatwoot
 from .config import Config
@@ -145,6 +161,13 @@ ETIQUETA_RESERVA = "reserva-nueva"
 # "qué me falta aprobar" de "qué ya quedó firme".
 ETIQUETA_RESERVA_PENDIENTE = "reserva-pendiente-aprobacion"
 
+# Cuando la propia persona cancela su turno por chat (cancelar_mi_reserva).
+ETIQUETA_RESERVA_CANCELADA = "reserva-cancelada"
+
+# Alguien pidió un horario ocupado y prefirió anotarse a esperar que se
+# libere, en vez de elegir otro (anotar_lista_espera).
+ETIQUETA_LISTA_ESPERA = "lista-espera"
+
 
 @tool
 def franjas_ocupadas(fecha: str, config: RunnableConfig) -> str:
@@ -217,6 +240,15 @@ def anotar_reserva(
             un pedido especial). Opcional.
         duracion_minutos: Cuánto dura el turno. Si no te dijeron nada, 60.
     """
+    ajustes = _ajustes_del_config(config)
+
+    try:
+        horario.validar(
+            fecha, hora, ajustes.horario_desde, ajustes.horario_hasta, ajustes.dias_cerrados
+        )
+    except horario.ErrorDeHorario as e:
+        return str(e)
+
     chatwoot = _chatwoot_del_config(config)
 
     detalle = [
@@ -246,7 +278,7 @@ def anotar_reserva(
                     "consultar franjas_ocupadas de nuevo para ese día."
                 )
 
-            requiere_aprobacion = _ajustes_del_config(config).reserva_requiere_aprobacion
+            requiere_aprobacion = ajustes.reserva_requiere_aprobacion
 
             evento = calendario.crear_evento(
                 titulo=f"{nombre} ({personas}p)",
@@ -278,7 +310,6 @@ def anotar_reserva(
 
             if evento_pendiente_id:
                 etiqueta = ETIQUETA_RESERVA_PENDIENTE
-                ajustes = _ajustes_del_config(config)
                 nota += "\n\n" + _aviso_de_aprobacion(
                     ajustes, conversacion, evento_pendiente_id
                 )
@@ -314,9 +345,187 @@ def anotar_reserva(
     )
 
 
+@tool
+def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
+    """Cancela un turno ya anotado en ESTA conversación.
+
+    Usala cuando la misma persona que hizo la reserva te pida cancelarla o
+    avise que no va a poder ir. Necesitás la fecha y hora CON LA QUE SE
+    ANOTÓ originalmente — si no las tenés claras, preguntaselas antes de
+    llamar a esta herramienta. Solo funciona con Google Calendar conectado:
+    es ahí donde se busca el turno.
+
+    Args:
+        fecha: La fecha original de la reserva, en formato AAAA-MM-DD.
+        hora: La hora original, en formato HH:MM (24 horas).
+    """
+    calendario = _calendario_del_config(config)
+    if calendario is None:
+        return (
+            "No puedo cancelar reservas en este canal: hace falta tener "
+            "Google Calendar configurado."
+        )
+
+    try:
+        inicio, _ = calendario.rango(fecha, hora, 1)
+        evento = calendario.evento_en(inicio)
+        if evento is None:
+            return (
+                f"No encontré ninguna reserva para el {fecha} a las {hora}. "
+                "Puede que ya se haya cancelado, o que el dato esté mal —"
+                " confirmá la fecha y hora con la persona."
+            )
+        calendario.cancelar_evento(evento["id"])
+    except Exception as e:
+        return f"No se pudo cancelar la reserva: {type(e).__name__}: {e}"
+
+    _avisar_a_chatwoot(
+        config,
+        f"Reserva cancelada por la persona: {fecha} {hora}.",
+        ETIQUETA_RESERVA_CANCELADA,
+    )
+
+    return f"Listo, cancelé la reserva del {fecha} a las {hora}."
+
+
+@tool
+def reprogramar_mi_reserva(
+    fecha_actual: str,
+    hora_actual: str,
+    fecha_nueva: str,
+    hora_nueva: str,
+    config: RunnableConfig,
+) -> str:
+    """Mueve un turno ya anotado en ESTA conversación a otro día u horario.
+
+    Usala cuando la persona pida cambiar su turno. Llamá antes a
+    franjas_ocupadas para confirmar que el horario nuevo esté libre — igual
+    se revisa acá adentro, pero avisarle a la persona de una es mejor que
+    hacerle preguntar dos veces. Solo funciona con Google Calendar
+    conectado.
+
+    Args:
+        fecha_actual: La fecha con la que se anotó la reserva, AAAA-MM-DD.
+        hora_actual: La hora con la que se anotó, HH:MM (24 horas).
+        fecha_nueva: La fecha nueva pedida, AAAA-MM-DD.
+        hora_nueva: La hora nueva pedida, HH:MM (24 horas).
+    """
+    calendario = _calendario_del_config(config)
+    if calendario is None:
+        return (
+            "No puedo reprogramar reservas en este canal: hace falta tener "
+            "Google Calendar configurado."
+        )
+
+    try:
+        inicio_actual, _ = calendario.rango(fecha_actual, hora_actual, 1)
+        evento = calendario.evento_en(inicio_actual)
+        if evento is None:
+            return (
+                f"No encontré ninguna reserva para el {fecha_actual} a las "
+                f"{hora_actual}. Confirmá la fecha y hora con la persona."
+            )
+
+        duracion = _duracion_minutos(evento)
+        inicio_nuevo, fin_nuevo = calendario.rango(fecha_nueva, hora_nueva, duracion)
+
+        if calendario.se_superpone(inicio_nuevo, fin_nuevo):
+            return (
+                f"Ese horario nuevo ({fecha_nueva} {hora_nueva}) ya está "
+                "ocupado. Ofrecele otro a la persona."
+            )
+
+        # Cancelar y crear de nuevo, no "mover": la API de Calendar no
+        # tiene un PATCH atómico para start/end que además re-chequee
+        # freeBusy, así que el chequeo de arriba y esto son dos pasos.
+        calendario.cancelar_evento(evento["id"])
+        calendario.crear_evento(
+            titulo=evento.get("summary", ""),
+            descripcion=evento.get("description", ""),
+            inicio=inicio_nuevo,
+            fin=fin_nuevo,
+            estado=evento.get("status", "confirmed"),
+        )
+    except Exception as e:
+        return f"No se pudo reprogramar la reserva: {type(e).__name__}: {e}"
+
+    _avisar_a_chatwoot(
+        config,
+        f"Reserva movida de {fecha_actual} {hora_actual} a "
+        f"{fecha_nueva} {hora_nueva}.",
+    )
+
+    return (
+        f"Listo, moví la reserva del {fecha_actual} {hora_actual} al "
+        f"{fecha_nueva} a las {hora_nueva}."
+    )
+
+
+@tool
+def anotar_lista_espera(
+    nombre: str,
+    personas: int,
+    fecha: str,
+    hora: str,
+    config: RunnableConfig,
+    telefono: str = "",
+) -> str:
+    """Anota a alguien en lista de espera para un horario que está ocupado.
+
+    Usala cuando anotar_reserva te avisó que el horario pedido ya está
+    tomado y la persona prefiere esperar a que se libere, en vez de elegir
+    otro. Deja una nota para el equipo del negocio — el aviso de que se
+    liberó un lugar lo hace alguien del negocio a mano, esto no manda nada
+    solo.
+
+    Args:
+        nombre: A nombre de quién es la espera.
+        personas: Cuántas personas van a ser.
+        fecha: La fecha pedida, en formato AAAA-MM-DD.
+        hora: La hora pedida, en formato HH:MM (24 horas).
+        telefono: Un teléfono de contacto, si lo dio. Opcional.
+    """
+    chatwoot = _chatwoot_del_config(config)
+    if chatwoot is None:
+        return "No puedo anotar listas de espera en este canal: hace falta tener Chatwoot configurado."
+
+    detalle = [
+        "Lista de espera",
+        f"Nombre: {nombre}",
+        f"Personas: {personas}",
+        f"Fecha: {fecha}",
+        f"Hora: {hora}",
+    ]
+    if telefono:
+        detalle.append(f"Teléfono: {telefono}")
+
+    conversacion = _conversacion_de(config)
+    if not conversacion:
+        return "No puedo anotar listas de espera en este canal."
+
+    try:
+        chatwoot.anotar(conversacion, "\n".join(detalle))
+        chatwoot.etiquetar(conversacion, ETIQUETA_LISTA_ESPERA)
+    except Exception as e:
+        return f"No se pudo anotar en la lista de espera: {type(e).__name__}: {e}"
+
+    return (
+        f"Listo, quedó anotado en lista de espera para el {fecha} a las "
+        f"{hora}. Avisale a la persona que el negocio la contacta si se "
+        "libera ese horario."
+    )
+
+
 # Lo que el agente tiene atado. Cuando agregues otra herramienta, sumala acá:
 # es la única lista que mira el grafo.
-HERRAMIENTAS = [clima, franjas_ocupadas, anotar_reserva]
+HERRAMIENTAS = [
+    clima,
+    franjas_ocupadas,
+    anotar_reserva,
+    cancelar_mi_reserva,
+    reprogramar_mi_reserva,
+    anotar_lista_espera,
+]
 
 
 # -- La reserva ---------------------------------------------------------------
@@ -350,6 +559,42 @@ def _chatwoot_del_config(config: RunnableConfig) -> Chatwoot | None:
         token=ajustes.chatwoot_token,
         cuenta_id=ajustes.chatwoot_cuenta_id,
     )
+
+
+def _avisar_a_chatwoot(config: RunnableConfig, texto: str, etiqueta: str = "") -> None:
+    """Deja una nota (y, si se pasó, una etiqueta) en Chatwoot — sin fallar
+    si Chatwoot no está configurado o si el pedido no sale.
+
+    La usan cancelar_mi_reserva y reprogramar_mi_reserva: en las dos, el
+    calendario YA es la fuente de la verdad para cuando llegan acá (el
+    turno ya se canceló o ya se movió), así que un aviso que no sale a la
+    bandeja no puede voltear la respuesta a la persona.
+    """
+    chatwoot = _chatwoot_del_config(config)
+    if chatwoot is None:
+        return
+
+    conversacion = _conversacion_de(config)
+    if not conversacion:
+        return
+
+    try:
+        chatwoot.anotar(conversacion, texto)
+        if etiqueta:
+            chatwoot.etiquetar(conversacion, etiqueta)
+    except Exception:
+        pass
+
+
+def _duracion_minutos(evento: dict) -> int:
+    """Cuánto dura un evento de Google Calendar, en minutos.
+
+    Al menos 1: una duración de 0 rompería calendario.rango() más adelante
+    (fin == inicio no tiene sentido para un turno).
+    """
+    inicio = datetime.fromisoformat(evento["start"]["dateTime"])
+    fin = datetime.fromisoformat(evento["end"]["dateTime"])
+    return max(1, int((fin - inicio).total_seconds() // 60))
 
 
 def _ajustes_del_config(config: RunnableConfig) -> Config:

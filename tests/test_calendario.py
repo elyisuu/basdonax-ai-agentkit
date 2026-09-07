@@ -200,6 +200,40 @@ def test_crear_evento_puede_quedar_tentative():
     assert cal.llamadas[0]["cuerpo"]["status"] == "tentative"
 
 
+# -- Buscar un evento por horario (cancelar/reprogramar mi reserva) ---------------
+
+
+def test_evento_en_consulta_por_get_con_el_camino_correcto():
+    cal = CalendarioFalso()
+    inicio = datetime(2026, 9, 12, 21, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+
+    cal.evento_en(inicio)
+
+    pedido = cal.llamadas[0]
+    assert pedido["metodo"] == "GET"
+    assert pedido["camino"].startswith(
+        "calendars/negocio%40group.calendar.google.com/events?singleEvents=true"
+    )
+
+
+def test_evento_en_devuelve_el_evento_encontrado(monkeypatch):
+    cal = CalendarioFalso()
+    monkeypatch.setattr(
+        cal, "_api", lambda metodo, camino, cuerpo=None: {"items": [{"id": "evento-1"}]}
+    )
+
+    inicio = datetime(2026, 9, 12, 21, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+    assert cal.evento_en(inicio) == {"id": "evento-1"}
+
+
+def test_evento_en_devuelve_none_si_no_hay_nada(monkeypatch):
+    cal = CalendarioFalso()
+    monkeypatch.setattr(cal, "_api", lambda metodo, camino, cuerpo=None: {"items": []})
+
+    inicio = datetime(2026, 9, 12, 21, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+    assert cal.evento_en(inicio) is None
+
+
 # -- Aprobar y cancelar -------------------------------------------------------------
 
 
@@ -254,6 +288,37 @@ def test_la_api_de_verdad_acepta_una_respuesta_vacia(monkeypatch):
 
 
 # -- Errores de la API real (sin la _api de mentira) ------------------------------
+
+
+def test_un_timeout_pasajero_se_reintenta_y_funciona(monkeypatch):
+    """La red falla una vez y anda a la segunda: no tiene que verse el
+    error, la reserva tiene que salir bien igual."""
+    import urllib.error
+    import urllib.request
+
+    cal = Calendario(calendario_id="negocio@x.com", credencial_json=CREDENCIAL)
+    monkeypatch.setattr(cal, "_access_token", lambda: "token-de-prueba")
+    monkeypatch.setattr("agente.reintentos.time.sleep", lambda segundos: None)
+
+    intentos = []
+
+    class _Respuesta(__import__("io").BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(pedido, timeout):
+        intentos.append(1)
+        if len(intentos) == 1:
+            raise urllib.error.URLError("conexión rechazada")
+        return _Respuesta(b'{"calendars": {"negocio@x.com": {"busy": []}}}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert cal.ocupado("2026-09-12") == []
+    assert len(intentos) == 2
 
 
 def test_un_error_http_se_convierte_en_errordecalendario(monkeypatch):

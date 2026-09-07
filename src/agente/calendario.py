@@ -38,6 +38,8 @@ from zoneinfo import ZoneInfo
 from google.auth import crypt
 from google.auth import jwt as jwt_de_google
 
+from .reintentos import con_reintentos
+
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://www.googleapis.com/calendar/v3"
 ALCANCE = "https://www.googleapis.com/auth/calendar"
@@ -118,6 +120,26 @@ class Calendario:
     def se_superpone(self, inicio: datetime, fin: datetime) -> bool:
         """Si ese rango pisa algo que ya está en el calendario."""
         return bool(self._franjas_ocupadas(inicio, fin))
+
+    def evento_en(self, inicio: datetime) -> dict | None:
+        """El evento que ocupa ese horario, si hay uno. None si está libre.
+
+        Sirve para que la propia persona pueda cancelar o reprogramar SU
+        turno por chat, dando la fecha y hora con la que lo hizo: no hace
+        falta guardar el id del evento en ningún lado, se lo vuelve a
+        encontrar por horario. Busca por superposición (no por igualdad
+        exacta de inicio), así que un dato apenas distinto al de la
+        creación —la persona se equivoca por un minuto— igual lo encuentra.
+        """
+        respuesta = self._api(
+            "GET",
+            f"calendars/{urllib.parse.quote(self.calendario_id, safe='')}"
+            f"/events?singleEvents=true"
+            f"&timeMin={urllib.parse.quote(inicio.isoformat())}"
+            f"&timeMax={urllib.parse.quote((inicio + timedelta(minutes=1)).isoformat())}",
+        )
+        eventos = respuesta.get("items") or []
+        return eventos[0] if eventos else None
 
     def _franjas_ocupadas(self, desde: datetime, hasta: datetime) -> list[dict]:
         respuesta = self._api(
@@ -215,7 +237,9 @@ class Calendario:
         pedido = urllib.request.Request(TOKEN_URL, data=cuerpo, method="POST")
 
         try:
-            with urllib.request.urlopen(pedido, timeout=ESPERA_DE_RED) as resp:
+            with con_reintentos(
+                lambda: urllib.request.urlopen(pedido, timeout=ESPERA_DE_RED)
+            ) as resp:
                 datos = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             detalle = e.read().decode("utf-8", "replace")[:300]
@@ -247,7 +271,9 @@ class Calendario:
         )
 
         try:
-            with urllib.request.urlopen(pedido, timeout=ESPERA_DE_RED) as resp:
+            with con_reintentos(
+                lambda: urllib.request.urlopen(pedido, timeout=ESPERA_DE_RED)
+            ) as resp:
                 cuerpo_resp = resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             detalle = e.read().decode("utf-8", "replace")[:300]

@@ -284,6 +284,37 @@ def test_sin_datos_avisa_que_faltan():
         Chatwoot(url="", token="", cuenta_id=1)
 
 
+def test_un_timeout_pasajero_se_reintenta_y_funciona(monkeypatch):
+    """La red falla una vez y anda a la segunda: la nota tiene que salir
+    igual, sin que el aviso de la reserva se pierda por eso."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    canal = Chatwoot(url="https://chatwoot.ejemplo.com", token="t", cuenta_id=1)
+    monkeypatch.setattr("agente.reintentos.time.sleep", lambda segundos: None)
+
+    intentos = []
+
+    class _Respuesta(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(pedido, timeout):
+        intentos.append(1)
+        if len(intentos) == 1:
+            raise urllib.error.URLError("conexión rechazada")
+        return _Respuesta(b'{"id": 99}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert canal._api("POST", "conversations/1/messages", {"content": "hola"}) == {"id": 99}
+    assert len(intentos) == 2
+
+
 # -- Juntar la ráfaga ---------------------------------------------------------
 
 

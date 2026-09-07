@@ -98,6 +98,14 @@ class Config:
     #     python -c "import secrets; print(secrets.token_hex(24))"
     reserva_secreto: str = ""
 
+    # -- Horario de atención: solo lo mira anotar_reserva() -----------------
+    # HH:MM, 24 horas. Vacío (el default) = sin restricción de horario.
+    horario_desde: str = ""
+    horario_hasta: str = ""
+    # Nombres de días en castellano separados por coma, p. ej. "domingo" o
+    # "lunes, domingo". Vacío (el default) = ningún día cerrado.
+    dias_cerrados: str = ""
+
     @classmethod
     def desde_entorno(
         cls, proveedor: str | None = None, modelo: str | None = None
@@ -168,6 +176,9 @@ class Config:
             ),
             url_publica=(os.getenv("URL_PUBLICA") or "").strip(),
             reserva_secreto=(os.getenv("RESERVA_SECRETO") or "").strip(),
+            horario_desde=(os.getenv("HORARIO_DESDE") or "").strip(),
+            horario_hasta=(os.getenv("HORARIO_HASTA") or "").strip(),
+            dias_cerrados=(os.getenv("DIAS_CERRADOS") or "").strip(),
         )
 
 

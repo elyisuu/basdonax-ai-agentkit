@@ -40,6 +40,9 @@ Lo que importa acá es qué hace cada uno:
 | `agente.py` | **El agente.** El grafo de LangGraph. Empezá por acá. |
 | `herramientas.py` | Lo que el agente puede hacer además de conversar: el clima y las reservas/turnos. |
 | `calendario.py` | Google Calendar (cuenta de servicio), para que `anotar_reserva` confirme turnos de verdad |
+| `horario.py` | El horario de atención (`HORARIO_DESDE/HASTA`, `DIAS_CERRADOS`), opcional |
+| `aprobacion.py` | Firma y valida los links de aprobar/rechazar una reserva pendiente |
+| `reintentos.py` | Backoff para las llamadas HTTP a Chatwoot y Google Calendar |
 | `modelos.py` | Crea el modelo y le pregunta al proveedor cuáles tiene |
 | `memoria.py` | Los checkpointers: `ram` / `sqlite` / `postgres` |
 | `prompts.py` | Lee y guarda `prompts/sistema.md` |
@@ -465,6 +468,52 @@ Al abrir el link:
 Sin `URL_PUBLICA`/`RESERVA_SECRETO` puestos, este modo igual reserva el
 horario en el calendario (nadie te lo dobla-reserva), pero sin links: hay
 que aprobar o rechazar directo en Google Calendar a mano.
+
+## Horario de atención
+
+`HORARIO_DESDE`, `HORARIO_HASTA` y `DIAS_CERRADOS` en el `.env`
+(`horario.py`). Antes de esto, el modelo solo sabía qué horario atendía el
+negocio por lo que decía su propio prompt (`prompts/sistema.md`) — nada se
+lo hacía cumplir de verdad. `anotar_reserva` ahora valida `(fecha, hora)`
+contra estas tres variables ANTES de tocar Chatwoot o el calendario. Las
+tres son opcionales y vacías por defecto: sin nada configurado, no hay
+ninguna restricción — igual que antes de que existiera `horario.py`.
+
+## Cancelar y reprogramar mi propia reserva
+
+`cancelar_mi_reserva` y `reprogramar_mi_reserva` (`herramientas.py`) — para
+cuando la misma persona que hizo la reserva escribe de vuelta a cambiarla.
+Las dos necesitan Google Calendar conectado (buscan el turno ahí, con
+`Calendario.evento_en()`) y funcionan por horario, no por id: no hace
+falta guardar en ningún lado qué evento le corresponde a qué conversación,
+alcanza con que el modelo le pida a la persona la fecha y hora con la que
+anotó originalmente. `reprogramar_mi_reserva` reusa el título y la
+descripción del evento viejo (no hace falta volver a pedir nombre,
+personas, etc.), cancela el turno viejo y crea uno nuevo — la API de
+Calendar no tiene un PATCH atómico de horario que además re-chequee
+disponibilidad, así que son dos pasos.
+
+## Lista de espera
+
+`anotar_lista_espera` (`herramientas.py`) — para cuando `anotar_reserva`
+avisa que el horario está ocupado y la persona prefiere esperar en vez de
+elegir otro. Deja una nota en Chatwoot con la etiqueta `lista-espera`; **no
+hay re-aviso automático** cuando el horario se libera — eso lo hace
+alguien del negocio a mano, filtrando la bandeja por esa etiqueta. Armar el
+aviso automático (detectar que se liberó el horario y avisarle solo a la
+persona en espera) queda para más adelante: necesitaría poder buscar, por
+contenido, qué conversaciones están esperando ESE horario puntual, y hoy
+no hay dónde guardar esa relación sin sumar una base de datos.
+
+## Reintentos en Chatwoot y Google Calendar
+
+`reintentos.py` — un timeout de red pasajero (una conexión que se corta a
+mitad de camino, un 502 momentáneo) ya no tira abajo una reserva o una
+respuesta: `Calendario._api()` / `_access_token()` y `Chatwoot._api()`
+reintentan hasta 3 veces con backoff (0.5s, 1s) antes de subir el error.
+Solo reintenta errores de red y 5xx — un 4xx (token vencido, pedido mal
+armado) sube de una, porque insistir no lo arregla y solo demora la
+respuesta a la persona.
 
 
 ## Hacia dónde va (para no diseñar en contra)

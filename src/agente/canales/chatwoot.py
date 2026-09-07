@@ -34,6 +34,7 @@ import urllib.error
 import urllib.request
 from collections import deque
 
+from ..reintentos import con_reintentos
 from .base import Canal, MensajeEntrante
 
 # Cuánto esperamos a que Chatwoot conteste. Corre en el mismo servidor que
@@ -262,7 +263,9 @@ class Chatwoot(Canal):
         )
 
         try:
-            with urllib.request.urlopen(pedido, timeout=ESPERA_DE_RED) as respuesta:
+            with con_reintentos(
+                lambda: urllib.request.urlopen(pedido, timeout=ESPERA_DE_RED)
+            ) as respuesta:
                 cuerpo = respuesta.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             # El cuerpo del error es lo único que dice qué pasó de verdad

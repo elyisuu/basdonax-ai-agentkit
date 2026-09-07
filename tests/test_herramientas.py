@@ -10,7 +10,10 @@ de ellos ande.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -19,9 +22,12 @@ from agente.calendario import ErrorDeCalendario  # noqa: E402
 from agente.canales.chatwoot import ErrorDeChatwoot  # noqa: E402
 from agente.herramientas import (  # noqa: E402
     HERRAMIENTAS,
+    anotar_lista_espera,
     anotar_reserva,
+    cancelar_mi_reserva,
     clima,
     franjas_ocupadas,
+    reprogramar_mi_reserva,
 )
 
 ROSARIO = {
@@ -159,7 +165,7 @@ class _CalendarioDeMentira:
     def __init__(self, ocupado=None, libre=True) -> None:
         self._ocupado = ocupado or []
         self._libre = libre
-        self.eventos: list[dict] = []
+        self.eventos: list[dict] = []  # solo los "vivos" (no cancelados)
         self.aprobados: list[str] = []
         self.cancelados: list[str] = []
 
@@ -167,7 +173,8 @@ class _CalendarioDeMentira:
         return self._ocupado
 
     def rango(self, fecha, hora, duracion_minutos):
-        return (f"{fecha} {hora} inicio", f"{fecha} {hora} +{duracion_minutos}min")
+        inicio = datetime.strptime(f"{fecha} {hora}", "%Y-%m-%d %H:%M")
+        return inicio, inicio + timedelta(minutes=duracion_minutos)
 
     def se_superpone(self, inicio, fin):
         return not self._libre
@@ -175,18 +182,38 @@ class _CalendarioDeMentira:
     def crear_evento(self, titulo, descripcion, inicio, fin, estado="confirmed"):
         evento = {
             "id": f"evento-{len(self.eventos) + 1}",
+            # Nombres viejos (los usan los tests de Nivel 2/1.5 de arriba)
+            # y los nombres reales de la API de Google (los usa
+            # evento_en/_duracion_minutos), a propósito duplicados.
             "titulo": titulo,
             "descripcion": descripcion,
             "estado": estado,
+            "summary": titulo,
+            "description": descripcion,
+            "status": estado,
+            "start": {"dateTime": inicio.isoformat()},
+            "end": {"dateTime": fin.isoformat()},
         }
         self.eventos.append(evento)
         return evento
 
     def aprobar_evento(self, evento_id):
         self.aprobados.append(evento_id)
+        for e in self.eventos:
+            if e["id"] == evento_id:
+                e["estado"] = e["status"] = "confirmed"
 
     def cancelar_evento(self, evento_id):
         self.cancelados.append(evento_id)
+        self.eventos = [e for e in self.eventos if e["id"] != evento_id]
+
+    def evento_en(self, inicio):
+        for e in self.eventos:
+            e_inicio = datetime.fromisoformat(e["start"]["dateTime"])
+            e_fin = datetime.fromisoformat(e["end"]["dateTime"])
+            if e_inicio <= inicio < e_fin:
+                return e
+        return None
 
 
 def _config(thread_id="42") -> dict:
@@ -207,18 +234,36 @@ class _AjustesDeMentira:
         reserva_requiere_aprobacion=False,
         url_publica="",
         reserva_secreto="",
+        horario_desde="",
+        horario_hasta="",
+        dias_cerrados="",
     ) -> None:
         self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
         self.url_publica = url_publica
         self.reserva_secreto = reserva_secreto
+        self.horario_desde = horario_desde
+        self.horario_hasta = horario_hasta
+        self.dias_cerrados = dias_cerrados
+
+
+@pytest.fixture(autouse=True)
+def _ajustes_por_defecto(monkeypatch):
+    """anotar_reserva llama a _ajustes_del_config(config) para el chequeo
+    de horario ANTES que nada más — sin este default, cualquier test que
+    no lo pise a mano llamaría a la Config de verdad y dependería del .env
+    de esta máquina. Los tests que necesitan otro valor (RESERVA_REQUIERE_
+    APROBACION en true, un horario puesto) lo pisan después con
+    _con_aprobacion() o monkeypatch.setattr directo."""
+    monkeypatch.setattr(
+        herramientas, "_ajustes_del_config", lambda config: _AjustesDeMentira()
+    )
 
 
 def _sin_aprobacion(monkeypatch) -> None:
     """RESERVA_REQUIERE_APROBACION en false — el caso normal (Nivel 2).
 
-    Hace falta en cualquier test que llegue a crear el evento en el
-    calendario: sin esto, anotar_reserva llamaría a la Config de verdad y
-    el test dependería del .env de esta máquina.
+    Ya lo pone _ajustes_por_defecto solo; queda para que los tests
+    existentes que lo llaman a mano sigan siendo explícitos.
     """
     monkeypatch.setattr(
         herramientas, "_ajustes_del_config", lambda config: _AjustesDeMentira()
@@ -233,6 +278,16 @@ def _con_aprobacion(monkeypatch, url_publica="", reserva_secreto="") -> None:
             reserva_requiere_aprobacion=True,
             url_publica=url_publica,
             reserva_secreto=reserva_secreto,
+        ),
+    )
+
+
+def _con_horario(monkeypatch, desde="", hasta="", cerrados="") -> None:
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(
+            horario_desde=desde, horario_hasta=hasta, dias_cerrados=cerrados
         ),
     )
 
@@ -472,6 +527,254 @@ def test_con_aprobacion_y_horario_ocupado_no_crea_nada(monkeypatch):
 
     assert "ocupado" in resultado.lower()
     assert not cal.eventos
+
+
+# -- Horario de atención -----------------------------------------------------------
+
+
+def test_fuera_del_horario_no_confirma_ni_anota(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+    _con_horario(monkeypatch, desde="09:00", hasta="20:00")
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "22:00"},
+        config=_config(),
+    )
+
+    assert "atiende hasta" in resultado.lower()
+    assert chatwoot.notas == [], "no tiene que anotar nada fuera de horario"
+
+
+def test_un_dia_cerrado_no_confirma_ni_anota(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+    _con_horario(monkeypatch, cerrados="domingo")
+
+    # 2026-09-13 es domingo.
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-13", "hora": "12:00"},
+        config=_config(),
+    )
+
+    assert "cerrado" in resultado.lower()
+    assert chatwoot.notas == []
+
+
+def test_sin_horario_configurado_no_restringe_nada(monkeypatch):
+    """El default (todo vacío) es el comportamiento de antes de este módulo."""
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "03:00"},
+        config=_config(),
+    )
+
+    assert "pendiente" in resultado.lower()
+
+
+def test_dentro_del_horario_sigue_andando(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+    _con_horario(monkeypatch, desde="09:00", hasta="20:00")
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "12:00"},
+        config=_config(),
+    )
+
+    assert "pendiente" in resultado.lower()
+
+
+# -- Cancelar y reprogramar mi reserva -----------------------------------------------
+
+
+def test_cancelar_mi_reserva_sin_calendario(monkeypatch):
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "calendar" in resultado.lower()
+
+
+def test_cancelar_mi_reserva_que_no_existe(monkeypatch):
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "no encontré" in resultado.lower()
+    assert cal.cancelados == []
+
+
+def test_cancelar_mi_reserva_la_encuentra_y_cancela(monkeypatch):
+    cal = _CalendarioDeMentira()
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan", inicio, fin)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "cancelé" in resultado.lower()
+    assert cal.cancelados == ["evento-1"]
+    assert cal.eventos == [], "el evento tiene que quedar fuera del calendario"
+    assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA_CANCELADA)]
+
+
+def test_cancelar_mi_reserva_no_falla_si_chatwoot_no_esta(monkeypatch):
+    """El calendario ya es la fuente de la verdad acá: un aviso que no
+    sale a la bandeja no puede voltear una cancelación que sí se hizo."""
+    cal = _CalendarioDeMentira()
+
+    class _Explota:
+        def anotar(self, *a, **k):
+            raise ErrorDeChatwoot("Chatwoot devolvió 500")
+
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: _Explota())
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "...", inicio, fin)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "cancelé" in resultado.lower()
+    assert cal.cancelados == ["evento-1"]
+
+
+def test_reprogramar_mi_reserva_sin_calendario(monkeypatch):
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    assert "calendar" in resultado.lower()
+
+
+def test_reprogramar_mi_reserva_que_no_existe(monkeypatch):
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    assert "no encontré" in resultado.lower()
+
+
+def test_reprogramar_mi_reserva_mueve_el_turno_y_conserva_los_datos(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 90)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan\nPersonas: 2", inicio, fin, estado="confirmed")
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    assert "moví" in resultado.lower()
+    assert cal.cancelados == ["evento-1"]
+    assert len(cal.eventos) == 1, "el turno viejo se borró y quedó el nuevo"
+
+    nuevo = cal.eventos[0]
+    assert nuevo["titulo"] == "Juan (2p)", "se reusan los datos del turno original"
+    assert nuevo["descripcion"] == "Nombre: Juan\nPersonas: 2"
+    assert nuevo["estado"] == "confirmed"
+
+    nuevo_inicio = datetime.fromisoformat(nuevo["start"]["dateTime"])
+    nuevo_fin = datetime.fromisoformat(nuevo["end"]["dateTime"])
+    assert (nuevo_fin - nuevo_inicio) == timedelta(minutes=90), "conserva la duración"
+
+
+def test_reprogramar_mi_reserva_con_el_horario_nuevo_ocupado(monkeypatch):
+    cal = _CalendarioDeMentira(libre=False)  # se_superpone siempre True
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "...", inicio, fin)
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    assert "ocupado" in resultado.lower()
+    assert cal.cancelados == [], "no se cancela el turno viejo si el nuevo no está libre"
+    assert len(cal.eventos) == 1
+
+
+# -- Lista de espera ----------------------------------------------------------------
+
+
+def test_anotar_lista_espera_sin_chatwoot(monkeypatch):
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = anotar_lista_espera.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
+        config=_config(),
+    )
+
+    assert "chatwoot" in resultado.lower()
+
+
+def test_anotar_lista_espera_deja_nota_y_etiqueta(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = anotar_lista_espera.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
+        config=_config(),
+    )
+
+    assert "anotado" in resultado.lower()
+    assert "Juan" in chatwoot.notas[0][1]
+    assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_LISTA_ESPERA)]
 
 
 # -- franjas_ocupadas -------------------------------------------------------------
