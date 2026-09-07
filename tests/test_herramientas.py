@@ -15,8 +15,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agente import herramientas  # noqa: E402
+from agente.calendario import ErrorDeCalendario  # noqa: E402
 from agente.canales.chatwoot import ErrorDeChatwoot  # noqa: E402
-from agente.herramientas import HERRAMIENTAS, anotar_reserva, clima  # noqa: E402
+from agente.herramientas import (  # noqa: E402
+    HERRAMIENTAS,
+    anotar_reserva,
+    clima,
+    franjas_ocupadas,
+)
 
 ROSARIO = {
     "nombre": "Rosario",
@@ -124,12 +130,17 @@ def test_el_modelo_recibe_una_descripcion_util():
     assert "lugar" in clima.args
 
 
-# -- anotar_reserva ------------------------------------------------------------
+# -- Reservas: franjas_ocupadas y anotar_reserva --------------------------------
 #
-# No se prueba contra un Chatwoot de verdad: se reemplaza `_chatwoot_del_config`
-# por uno de mentira que anota lo que se le pidió, igual que hace
-# test_chatwoot.py con la API. `config` se arma a mano, con la misma forma que
-# le pasa Agente._config_hilo(): {"configurable": {"thread_id": ...}}.
+# No se prueba contra Chatwoot ni Google Calendar de verdad: se reemplazan
+# `_chatwoot_del_config` y `_calendario_del_config` por versiones de
+# mentira que anotan lo que se les pidió, mismo criterio que test_chatwoot.py
+# y test_calendario.py con sus respectivas API. `config` se arma a mano, con
+# la misma forma que le pasa Agente._config_hilo(): {"configurable":
+# {"thread_id": ...}}.
+#
+# Cada test deja explícito qué hay conectado y qué no (aunque sea None):
+# así ningún test depende de lo que diga el .env de verdad de esta máquina.
 
 
 class _ChatwootDeMentira:
@@ -144,16 +155,47 @@ class _ChatwootDeMentira:
         self.etiquetas.append((conversacion, etiqueta))
 
 
+class _CalendarioDeMentira:
+    def __init__(self, ocupado=None, libre=True) -> None:
+        self._ocupado = ocupado or []
+        self._libre = libre
+        self.eventos: list[dict] = []
+
+    def ocupado(self, fecha):
+        return self._ocupado
+
+    def rango(self, fecha, hora, duracion_minutos):
+        return (f"{fecha} {hora} inicio", f"{fecha} {hora} +{duracion_minutos}min")
+
+    def se_superpone(self, inicio, fin):
+        return not self._libre
+
+    def crear_evento(self, titulo, descripcion, inicio, fin):
+        evento = {"titulo": titulo, "descripcion": descripcion}
+        self.eventos.append(evento)
+        return evento
+
+
 def _config(thread_id="42") -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
-def test_anota_la_reserva_y_etiqueta_la_conversacion(monkeypatch):
+def _sin_nada(monkeypatch) -> None:
+    """Ni Chatwoot ni calendario conectados — el caso de Telegram, por ejemplo."""
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+
+# -- Nivel 1: solo Chatwoot, sin calendario --------------------------------------
+
+
+def test_sin_calendario_solo_anota_y_queda_pendiente(monkeypatch):
     falso = _ChatwootDeMentira()
     monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: falso)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
 
     resultado = anotar_reserva.invoke(
-        {"nombre": "Juan", "personas": 4, "fecha": "sábado", "hora": "21hs"},
+        {"nombre": "Juan", "personas": 4, "fecha": "2026-09-12", "hora": "21:00"},
         config=_config(),
     )
 
@@ -167,9 +209,10 @@ def test_anota_la_reserva_y_etiqueta_la_conversacion(monkeypatch):
 def test_los_datos_opcionales_solo_aparecen_si_se_dieron(monkeypatch):
     falso = _ChatwootDeMentira()
     monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: falso)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
 
     anotar_reserva.invoke(
-        {"nombre": "Ana", "personas": 2, "fecha": "hoy", "hora": "20hs"},
+        {"nombre": "Ana", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
         config=_config(),
     )
 
@@ -177,34 +220,151 @@ def test_los_datos_opcionales_solo_aparecen_si_se_dieron(monkeypatch):
     assert "Aclaración" not in falso.notas[0][1]
 
 
-def test_sin_chatwoot_configurado_no_intenta_nada(monkeypatch):
-    """En Telegram o en la plataforma de pruebas no hay dónde anotar la reserva."""
-    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+def test_sin_nada_conectado_no_intenta_nada(monkeypatch):
+    """En Telegram o en la plataforma de pruebas no hay dónde guardar la reserva."""
+    _sin_nada(monkeypatch)
 
     resultado = anotar_reserva.invoke(
-        {"nombre": "Juan", "personas": 2, "fecha": "hoy", "hora": "20hs"},
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
         config=_config(),
     )
 
     assert "chatwoot" in resultado.lower()
+    assert "calendar" in resultado.lower()
 
 
-def test_si_falla_chatwoot_la_charla_sigue(monkeypatch):
-    """Una herramienta que levanta una excepción corta toda la respuesta."""
+def test_si_falla_chatwoot_y_no_hay_calendario_se_avisa_del_error(monkeypatch):
+    """Sin calendario, Chatwoot es la ÚNICA constancia: si falla, no se
+    puede decir "reserva anotada" — se perdió de verdad."""
 
     class _Explota:
         def anotar(self, *a, **k):
             raise ErrorDeChatwoot("Chatwoot devolvió 404 en conversations/42")
 
     monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: _Explota())
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
 
     resultado = anotar_reserva.invoke(
-        {"nombre": "Juan", "personas": 2, "fecha": "hoy", "hora": "20hs"},
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
         config=_config(),
     )
 
     assert "ErrorDeChatwoot" in resultado
     assert "404" in resultado
+
+
+# -- Nivel 2: con calendario conectado -------------------------------------------
+
+
+def test_con_calendario_libre_confirma_el_turno(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(),
+    )
+
+    assert "confirmado" in resultado.lower()
+    assert cal.eventos, "tendría que haber creado el evento"
+    assert cal.eventos[0]["titulo"] == "Ana (1p)"
+    # También le queda una constancia al equipo en la bandeja de Chatwoot.
+    assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA)]
+
+
+def test_con_calendario_ocupado_no_confirma_y_no_crea_el_evento(monkeypatch):
+    cal = _CalendarioDeMentira(libre=False)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(),
+    )
+
+    assert "ocupado" in resultado.lower()
+    assert not cal.eventos, "no tiene que crear nada si el horario está tomado"
+
+
+def test_si_falla_el_calendario_no_se_avisa_reserva_pendiente(monkeypatch):
+    """Si el calendario explota, no hay que decir "quedó anotada": ni el
+    calendario ni (en este test) Chatwoot tienen la reserva."""
+
+    class _Explota:
+        def rango(self, *a, **k):
+            raise ErrorDeCalendario("Google Calendar devolvió 500")
+
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: _Explota())
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(),
+    )
+
+    assert "ErrorDeCalendario" in resultado
+    assert "500" in resultado
+
+
+def test_si_falla_chatwoot_pero_el_calendario_ya_confirmo_no_se_pierde_el_turno(monkeypatch):
+    """El calendario es la fuente de la verdad acá: un aviso que no salió a
+    la bandeja no puede tirar abajo un turno que sí quedó guardado."""
+    cal = _CalendarioDeMentira(libre=True)
+
+    class _Explota:
+        def anotar(self, *a, **k):
+            raise ErrorDeChatwoot("Chatwoot devolvió 500")
+
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: _Explota())
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(),
+    )
+
+    assert "confirmado" in resultado.lower()
+    assert cal.eventos, "el turno se creó igual"
+
+
+# -- franjas_ocupadas -------------------------------------------------------------
+
+
+def test_franjas_ocupadas_lista_lo_que_ya_esta_tomado(monkeypatch):
+    cal = _CalendarioDeMentira(ocupado=[("10:00", "11:00"), ("15:00", "16:00")])
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+
+    resultado = franjas_ocupadas.invoke({"fecha": "2026-09-12"}, config=_config())
+
+    assert "10:00" in resultado and "11:00" in resultado
+    assert "15:00" in resultado and "16:00" in resultado
+
+
+def test_franjas_ocupadas_sin_calendario_configurado(monkeypatch):
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+    resultado = franjas_ocupadas.invoke({"fecha": "2026-09-12"}, config=_config())
+
+    assert "no tiene un calendario conectado" in resultado.lower()
+
+
+def test_si_falla_el_calendario_al_consultar_la_charla_sigue(monkeypatch):
+    class _Explota:
+        def ocupado(self, fecha):
+            raise ErrorDeCalendario("Google Calendar devolvió 500")
+
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: _Explota())
+
+    resultado = franjas_ocupadas.invoke({"fecha": "2026-09-12"}, config=_config())
+
+    assert "ErrorDeCalendario" in resultado
+    assert "500" in resultado
+
+
+def test_franjas_ocupadas_esta_en_la_lista():
+    assert franjas_ocupadas in HERRAMIENTAS
 
 
 def test_anotar_reserva_esta_en_la_lista():
@@ -219,3 +379,10 @@ def test_el_modelo_recibe_una_descripcion_util_de_la_reserva():
         "el thread_id se inyecta solo (RunnableConfig); "
         "el modelo no lo tiene que mandar ni saber que existe"
     )
+
+
+def test_el_modelo_recibe_una_descripcion_util_de_franjas_ocupadas():
+    assert franjas_ocupadas.name == "franjas_ocupadas"
+    assert "calendario" in franjas_ocupadas.description.lower()
+    assert "fecha" in franjas_ocupadas.args
+    assert "config" not in franjas_ocupadas.args

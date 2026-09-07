@@ -25,7 +25,9 @@ permite enchufarlo a cualquier canal sin tocar una línea de acá adentro.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterator
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -173,7 +175,16 @@ class Agente:
         (más o menos 1.000 tokens). Con un prompt corto no pasa nada malo,
         simplemente no se cachea.
         """
-        texto = leer_prompt(self.config.prompt_sistema)
+        # La fecha va al final, no adentro de prompts/sistema.md: ese archivo
+        # es la personalidad y se edita a mano; esto cambia solo, todos los
+        # días. Sin esto el modelo no tiene forma de saber qué día es hoy, y
+        # "el sábado" o "mañana" (herramientas.py, anotar_reserva) quedarían
+        # adivinados. Se recalcula en cada mensaje, así que nunca queda vieja
+        # — el único costo es que el caché de Claude falla una vez por día,
+        # cuando cambia la fecha.
+        texto = leer_prompt(self.config.prompt_sistema) + "\n\n" + _fecha_de_hoy(
+            self.config.zona_horaria
+        )
 
         if self.config.cache and self.config.proveedor == "claude":
             return SystemMessage(
@@ -280,6 +291,23 @@ class Agente:
 
 
 # -- Ayudantes ----------------------------------------------------------------
+
+_DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+
+def _fecha_de_hoy(zona_horaria: str) -> str:
+    """La fecha y hora de ahora, en la zona horaria del negocio.
+
+    Si ZONA_HORARIA está mal escrita en el .env (una que no existe),
+    ZoneInfo tira excepción y se cae la respuesta entera — a propósito: es
+    mejor un error claro apenas se manda un mensaje que turnos guardados
+    horas corridos sin que nadie lo note.
+    """
+    ahora = datetime.now(ZoneInfo(zona_horaria))
+    return (
+        f"(Hoy es {_DIAS[ahora.weekday()]} {ahora.strftime('%Y-%m-%d')}, "
+        f"son las {ahora.strftime('%H:%M')}, zona horaria {zona_horaria}.)"
+    )
 
 
 def _recortar(mensajes: list, tope: int) -> list:

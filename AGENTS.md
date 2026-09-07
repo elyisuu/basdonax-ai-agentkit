@@ -38,7 +38,8 @@ Lo que importa acá es qué hace cada uno:
 | Archivo | Qué resuelve |
 |---|---|
 | `agente.py` | **El agente.** El grafo de LangGraph. Empezá por acá. |
-| `herramientas.py` | Lo que el agente puede hacer además de conversar. Hoy: el clima. |
+| `herramientas.py` | Lo que el agente puede hacer además de conversar: el clima y las reservas/turnos. |
+| `calendario.py` | Google Calendar (cuenta de servicio), para que `anotar_reserva` confirme turnos de verdad |
 | `modelos.py` | Crea el modelo y le pregunta al proveedor cuáles tiene |
 | `memoria.py` | Los checkpointers: `ram` / `sqlite` / `postgres` |
 | `prompts.py` | Lee y guarda `prompts/sistema.md` |
@@ -355,6 +356,77 @@ plataforma de pruebas: son dos cosas distintas y la de pruebas no sale de
 equivocar: si dos personas comparten el mismo valor, comparten la conversación.
 
 ---
+
+## Cómo se conecta Google Calendar (turnos de verdad)
+
+`anotar_reserva` (`herramientas.py`) puede confirmar un turno de una,
+chequeando disponibilidad real, en vez de solo dejarlo anotado para que
+alguien lo confirme a mano. Para eso habla con la API de Google Calendar
+(`calendario.py`) usando una **cuenta de servicio** — no el login del dueño
+del negocio. No hay ninguna pantalla de "Iniciar sesión con Google" que
+programar: el negocio comparte su calendario con un email, como quien le da
+acceso a un empleado más.
+
+**Setup, una sola vez** (sirve para todos los clientes que sumes después):
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → crear un
+   proyecto nuevo (o usar uno que ya tengas).
+2. APIs & Services → Library → buscar "Google Calendar API" → Enable.
+3. IAM & Admin → Service Accounts → Create Service Account. No hace falta
+   darle ningún rol a nivel del proyecto: los permisos van a venir de que
+   el negocio comparta SU calendario con esta cuenta, no de IAM.
+4. Entrá a la cuenta de servicio recién creada → pestaña "Keys" → Add Key →
+   Create new key → JSON. Se descarga un archivo — es la única vez que
+   Google te lo muestra.
+5. Copiá el `client_email` de ese JSON (algo como
+   `agente@tu-proyecto.iam.gserviceaccount.com`): es lo que cada cliente
+   tiene que agregar a su calendario.
+
+**Setup por cliente** (esto sí se repite con cada uno):
+
+1. El cliente entra a [calendar.google.com](https://calendar.google.com),
+   crea un calendario (o usa uno que ya tenga) para los turnos.
+2. Configuración de ese calendario → "Compartir con personas específicas"
+   → agregar el email de la cuenta de servicio → permiso **"Modificar
+   eventos"** (sin esto, `anotar_reserva` puede leer pero no crear turnos).
+3. En esa misma pantalla, "Integrar calendario" tiene el **ID del
+   calendario** — para uno creado a propósito es algo como
+   `xxxxxxxx@group.calendar.google.com`.
+4. En el `.env` de esa instancia: `GOOGLE_SERVICE_ACCOUNT_JSON` (el
+   contenido completo del archivo del paso 4 de arriba, pegado en una sola
+   línea) y `GOOGLE_CALENDAR_ID` (el de este paso). También `ZONA_HORARIA`
+   con el huso del negocio (`Europe/Lisbon`, no el tuyo si vivís en otro
+   país) — sin esto los turnos se guardan en el huso equivocado.
+
+**Por qué no hace falta OAuth ni una pantalla de consentimiento**: eso es
+lo que se usa cuando la app necesita actuar en nombre de una PERSONA
+distinta por cada login (y hay que sostener tokens que vencen, refrescarlos,
+etc.). Acá alcanza con que el negocio comparta un calendario, que es una
+operación de dos clics y no vence nunca. Si en algún momento se vende esto
+a muchas empresas y no querés ser vos el que hace este paso a paso con cada
+una, ahí sí conviene migrar a OAuth con una pantalla de "Conectar con
+Google" — pero es un proyecto aparte, no algo para hacer de entrada.
+
+**Detalles que no son obvios acá:**
+
+- **El JWT de la cuenta de servicio se firma con `google-auth`, no con
+  `google-api-python-client`.** Lo único que hace falta de Google es firmar
+  (RSA-SHA256, no viene en la biblioteca estándar); el resto —pedir el
+  access_token, consultar disponibilidad, crear el evento— son pedidos
+  HTTP con `urllib`, mismo criterio que `canales/chatwoot.py`.
+- **El modelo no sabe qué día es "hoy" por su cuenta.** `Agente._sistema()`
+  le agrega la fecha y hora actuales (en `ZONA_HORARIA`) al final del
+  prompt en cada mensaje — sin esto, "el sábado" o "mañana" quedarían
+  adivinados. Tiene un costo chico: el caché de Claude falla una vez por
+  día, cuando cambia la fecha.
+- **`anotar_reserva` sirve con calendario, con Chatwoot, con los dos, o con
+  ninguno.** Con calendario, confirma de una. Sin calendario pero con
+  Chatwoot, deja una nota pendiente (Nivel 1). Con los dos, hace las dos
+  cosas: el calendario es la fuente de la verdad y Chatwoot es solo para
+  que el equipo lo vea en la bandeja — por eso, si el calendario ya
+  confirmó, un fallo al avisar en Chatwoot no tira abajo el turno. Sin
+  ninguno de los dos, avisa que no puede tomar la reserva en ese canal.
+
 
 ## Hacia dónde va (para no diseñar en contra)
 

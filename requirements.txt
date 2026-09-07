@@ -21,6 +21,15 @@ fastapi>=0.115,<1
 uvicorn>=0.30,<1
 python-dotenv>=1.0,<2
 
+# --- Google Calendar (herramienta anotar_reserva, calendario.py) ----------
+# Separado de langchain-google-genai a propósito: ese es el proveedor
+# Gemini y es opcional ("podés borrar los que no vayas a usar"), pero esto
+# lo necesita cualquier proveedor si el negocio conectó un calendario. Solo
+# se usa para FIRMAR el JWT de la cuenta de servicio (RSA-SHA256, no viene
+# en la biblioteca estándar) — el resto son pedidos HTTP con urllib, igual
+# que canales/chatwoot.py.
+google-auth>=2.30,<3
+
 # --- Solo para MODO=produccion ---------------------------------------------
 # Descomentá estas dos líneas cuando pases a Postgres.
 #

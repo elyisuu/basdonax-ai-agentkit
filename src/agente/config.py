@@ -68,6 +68,20 @@ class Config:
     # Cuánto espera juntando la ráfaga antes de contestar (ver buffer.py).
     buffer_segundos: int = 8
 
+    # -- Fecha y hora del negocio -------------------------------------------
+    # El modelo no sabe qué día es hoy por su cuenta. Agente._sistema() le
+    # avisa la fecha y hora actuales en esta zona, así puede convertir "el
+    # sábado" o "mañana" en una fecha concreta sin inventar nada.
+    zona_horaria: str = "UTC"
+
+    # -- Google Calendar: solo lo mira anotar_reserva() (herramientas.py) ---
+    # El ID del calendario que compartió el negocio con la cuenta de
+    # servicio (Configuración del calendario → Integrar calendario).
+    google_calendar_id: str = ""
+    # El JSON entero de la cuenta de servicio, en una sola línea. Ver el
+    # paso a paso en AGENTS.md.
+    google_service_account_json: str = ""
+
     @classmethod
     def desde_entorno(
         cls, proveedor: str | None = None, modelo: str | None = None
@@ -128,6 +142,11 @@ class Config:
                 os.getenv("CHATWOOT_WEBHOOK_TOKEN") or ""
             ).strip(),
             buffer_segundos=_entero("BUFFER_SEGUNDOS", 8),
+            zona_horaria=(os.getenv("ZONA_HORARIA") or "UTC").strip(),
+            google_calendar_id=(os.getenv("GOOGLE_CALENDAR_ID") or "").strip(),
+            google_service_account_json=(
+                os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+            ).strip(),
         )
 
 

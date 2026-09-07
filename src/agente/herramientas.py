@@ -6,14 +6,19 @@ y LangGraph la corre y le devuelve el resultado. Por eso el **docstring importa
 tanto como el código**: es literalmente lo único que el modelo lee para decidir
 si esta herramienta le sirve y qué mandarle.
 
-Hay dos:
+Hay tres:
 
-  · `clima`           → no necesita nada del canal, funciona en cualquiera.
-  · `anotar_reserva`  → habla con Chatwoot, así que solo sirve en un canal
-                         que tenga Chatwoot configurado (hoy, WhatsApp). En
-                         Telegram o en la plataforma de pruebas, `config`
-                         viene sin datos de Chatwoot y la herramienta lo
-                         avisa como texto en vez de fallar.
+  · `clima`             → no necesita nada del canal, funciona en cualquiera.
+  · `franjas_ocupadas`  → lee Google Calendar. Sirve solo si el negocio
+                           conectó un calendario (ver calendario.py).
+  · `anotar_reserva`    → guarda el turno. Si hay calendario conectado, lo
+                           confirma de una (chequea el horario y crea el
+                           evento); si no, deja una nota en Chatwoot
+                           pendiente de que alguien la confirme a mano.
+                           Sirve con cualquiera de los dos, con los dos, o
+                           con ninguno — en ese último caso avisa que no
+                           puede tomar reservas en ese canal, en vez de
+                           fallar.
 
 `clima` usa **Open-Meteo** (https://open-meteo.com), que es gratis, no pide
 registro y no usa clave de API. Eso es a propósito: este repo es para probar
@@ -39,6 +44,7 @@ import urllib.request
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
+from .calendario import Calendario
 from .canales.chatwoot import Chatwoot
 from .config import Config
 
@@ -130,6 +136,39 @@ ETIQUETA_RESERVA = "reserva-nueva"
 
 
 @tool
+def franjas_ocupadas(fecha: str, config: RunnableConfig) -> str:
+    """Lista los horarios ya ocupados del calendario, para una fecha.
+
+    Llamala ANTES de anotar_reserva cuando el negocio tenga un calendario
+    conectado, para no ofrecerle a la persona un horario que ya está
+    tomado. Lo que no aparece en la lista y cae dentro del horario de
+    atención (el que sabés por tu propio prompt) está libre.
+
+    Args:
+        fecha: La fecha a consultar, en formato AAAA-MM-DD (por ejemplo
+            "2026-09-13"). Convertí "el sábado" o "mañana" a esta forma
+            usando la fecha de hoy que tenés en el mensaje de sistema.
+    """
+    try:
+        calendario = _calendario_del_config(config)
+        if calendario is None:
+            return "Este negocio no tiene un calendario conectado."
+        ocupado = calendario.ocupado(fecha)
+    except Exception as e:
+        # Mismo criterio que en clima(): el error viaja como texto, no como
+        # excepción, para que la charla siga y el modelo se lo explique a
+        # la persona con sus palabras.
+        return f"No se pudo consultar el calendario: {type(e).__name__}: {e}"
+
+    if not ocupado:
+        return f"No hay nada ocupado en el calendario el {fecha}."
+
+    lineas = [f"Horarios ocupados el {fecha}:"]
+    lineas += [f"- {desde}–{hasta}" for desde, hasta in ocupado]
+    return "\n".join(lineas)
+
+
+@tool
 def anotar_reserva(
     nombre: str,
     personas: int,
@@ -138,41 +177,35 @@ def anotar_reserva(
     config: RunnableConfig,
     telefono: str = "",
     aclaracion: str = "",
+    duracion_minutos: int = 60,
 ) -> str:
-    """Anota un pedido de reserva de mesa para que el restaurante lo confirme.
+    """Guarda un turno o una reserva.
 
-    Usala recién cuando ya tenés nombre, cantidad de personas, fecha y hora
-    confirmados con la persona — repetile el resumen antes de llamarla: un
-    dato mal entendido acá es peor que preguntar de nuevo. Esta herramienta
-    NO confirma la reserva, solo la deja anotada: decile siempre a la
-    persona que queda pendiente de que el restaurante la confirme.
+    Si el negocio tiene Google Calendar conectado, esta herramienta CONFIRMA
+    la reserva de una: revisa que el horario esté libre y crea el evento —
+    llamá antes a franjas_ocupadas para no ofrecer un horario tomado. Si el
+    negocio NO tiene calendario, la reserva queda anotada nada más,
+    pendiente de que alguien la confirme a mano.
+
+    De cualquiera de las dos formas, repetile el resumen a la persona antes
+    de llamar a esta herramienta: un dato mal entendido acá es peor que
+    preguntar de nuevo.
 
     Args:
         nombre: A nombre de quién es la reserva.
-        personas: Cuántas personas van a ser.
-        fecha: La fecha tal como te la dijo la persona (por ejemplo
-            "sábado 12" o "12/09"). No la conviertas ni la inventes.
-        hora: La hora tal como te la dijo la persona (por ejemplo "21hs").
+        personas: Cuántas personas van a ser. Poné 1 si es un turno
+            individual (una consulta, una sesión).
+        fecha: La fecha en formato AAAA-MM-DD. Convertí "el sábado" o
+            "mañana" usando la fecha de hoy que tenés en tu propio prompt.
+        hora: La hora en formato HH:MM, 24 horas (por ejemplo "21:00").
         telefono: Un teléfono de contacto, si lo dio. Opcional.
         aclaracion: Algo para tener en cuenta (una alergia, un cumpleaños,
-            que pidió mesa afuera). Opcional.
+            un pedido especial). Opcional.
+        duracion_minutos: Cuánto dura el turno. Si no te dijeron nada, 60.
     """
     chatwoot = _chatwoot_del_config(config)
-    if chatwoot is None:
-        # No es un error de verdad: en Telegram o en la plataforma de
-        # pruebas no hay Chatwoot, así que no hay dónde anotar nada. El
-        # modelo lee esto y se lo explica a la persona en vez de romperse.
-        return (
-            "No puedo anotar reservas en este canal: hace falta tener "
-            "Chatwoot configurado."
-        )
-
-    conversacion = _conversacion_de(config)
-    if not conversacion:
-        return "No pude identificar la conversación para anotar la reserva."
 
     detalle = [
-        "📅 Reserva nueva",
         f"Nombre: {nombre}",
         f"Personas: {personas}",
         f"Fecha: {fecha}",
@@ -182,26 +215,67 @@ def anotar_reserva(
         detalle.append(f"Teléfono: {telefono}")
     if aclaracion:
         detalle.append(f"Aclaración: {aclaracion}")
+    texto_detalle = "\n".join(detalle)
 
+    confirmada = False
     try:
-        chatwoot.anotar(conversacion, "\n".join(detalle))
-        chatwoot.etiquetar(conversacion, ETIQUETA_RESERVA)
+        calendario = _calendario_del_config(config)
+        if calendario is not None:
+            inicio, fin = calendario.rango(fecha, hora, duracion_minutos)
+
+            if calendario.se_superpone(inicio, fin):
+                return (
+                    f"Ese horario ({fecha} {hora}) ya está ocupado en el "
+                    "calendario. Ofrecele otro a la persona — podés "
+                    "consultar franjas_ocupadas de nuevo para ese día."
+                )
+
+            calendario.crear_evento(
+                titulo=f"{nombre} ({personas}p)",
+                descripcion=texto_detalle,
+                inicio=inicio,
+                fin=fin,
+            )
+            confirmada = True
     except Exception as e:
-        # Misma razón que en clima(): si esto explota, LangGraph corta la
-        # respuesta entera. Devolviendo el problema como texto, el modelo se
-        # lo explica a la persona y la charla sigue. Los errores de
-        # Chatwoot vienen como ErrorDeChatwoot, con el motivo adentro.
-        return f"No se pudo anotar la reserva: {type(e).__name__}: {e}"
+        return f"No se pudo crear el turno en el calendario: {type(e).__name__}: {e}"
+
+    if chatwoot is None and not confirmada:
+        # Ni calendario ni Chatwoot: no hay dónde dejar ninguna constancia.
+        return (
+            "No puedo tomar reservas en este canal: hace falta tener "
+            "Chatwoot o Google Calendar configurados."
+        )
+
+    if chatwoot is not None:
+        conversacion = _conversacion_de(config)
+        if conversacion:
+            try:
+                chatwoot.anotar(conversacion, "Reserva\n" + texto_detalle)
+                chatwoot.etiquetar(conversacion, ETIQUETA_RESERVA)
+            except Exception as e:
+                if not confirmada:
+                    # Acá Chatwoot ES la única constancia de la reserva: si
+                    # esto falla, no se guardó en ningún lado. Tiene que
+                    # llegar como error, no como "quedó anotada".
+                    return f"No se pudo anotar la reserva: {type(e).__name__}: {e}"
+                # El calendario ya tiene la reserva confirmada; esto es
+                # solo para que el equipo también la vea en la bandeja, no
+                # es la fuente de la verdad — no vale la pena arruinar una
+                # reserva que sí se guardó por un aviso que no salió.
+
+    if confirmada:
+        return f"Turno confirmado para el {fecha} a las {hora}. Avisale a la persona."
 
     return (
         "Reserva anotada. Avisale a la persona que queda pendiente de "
-        "confirmación del restaurante."
+        "confirmación."
     )
 
 
 # Lo que el agente tiene atado. Cuando agregues otra herramienta, sumala acá:
 # es la única lista que mira el grafo.
-HERRAMIENTAS = [clima, anotar_reserva]
+HERRAMIENTAS = [clima, franjas_ocupadas, anotar_reserva]
 
 
 # -- La reserva ---------------------------------------------------------------
@@ -234,6 +308,23 @@ def _chatwoot_del_config(config: RunnableConfig) -> Chatwoot | None:
         url=ajustes.chatwoot_url,
         token=ajustes.chatwoot_token,
         cuenta_id=ajustes.chatwoot_cuenta_id,
+    )
+
+
+def _calendario_del_config(config: RunnableConfig) -> Calendario | None:
+    """Un cliente de Google Calendar armado con el .env, o None si no está puesto.
+
+    Mismo criterio que _chatwoot_del_config(): se arma en cada llamada, así
+    que un cambio de credenciales en el .env se ve sin reiniciar nada.
+    """
+    ajustes = Config.desde_entorno()
+    if not ajustes.google_calendar_id or not ajustes.google_service_account_json:
+        return None
+
+    return Calendario(
+        calendario_id=ajustes.google_calendar_id,
+        credencial_json=ajustes.google_service_account_json,
+        zona_horaria=ajustes.zona_horaria,
     )
 
 

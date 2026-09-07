@@ -205,7 +205,9 @@ def test_el_prompt_sale_del_archivo():
 
     entrada = a._armar_entrada({"messages": []})
 
-    assert entrada[0].content == leer_prompt(a.config.prompt_sistema)
+    # Termina con la fecha de hoy (test_avisa_que_dia_es_hoy la prueba
+    # entera); acá solo importa que el archivo siga siendo la base.
+    assert entrada[0].content.startswith(leer_prompt(a.config.prompt_sistema))
 
 
 def test_con_cache_el_prompt_va_marcado_para_claude():
@@ -216,7 +218,7 @@ def test_con_cache_el_prompt_va_marcado_para_claude():
     bloque = a._armar_entrada({"messages": []})[0].content[0]
 
     assert bloque["cache_control"] == {"type": "ephemeral"}
-    assert bloque["text"] == leer_prompt(a.config.prompt_sistema)
+    assert bloque["text"].startswith(leer_prompt(a.config.prompt_sistema))
 
 
 def test_sin_cache_el_prompt_va_pelado():
@@ -224,6 +226,29 @@ def test_sin_cache_el_prompt_va_pelado():
     a.config.cache = False
 
     assert isinstance(a._armar_entrada({"messages": []})[0].content, str)
+
+
+def test_avisa_que_dia_es_hoy():
+    """Sin esto el modelo no tiene forma de saber qué día es "hoy": lo
+    necesita anotar_reserva para convertir "el sábado" en una fecha."""
+    a = agente_falso(["x"])
+    a.config.cache = False
+    a.config.zona_horaria = "America/Argentina/Buenos_Aires"
+
+    texto = a._armar_entrada({"messages": []})[0].content
+
+    assert "Hoy es" in texto
+    assert "America/Argentina/Buenos_Aires" in texto
+
+
+def test_una_zona_horaria_que_no_existe_no_se_ignora_en_silencio():
+    """Mejor un error claro al mandar un mensaje que un turno guardado en
+    el huso horario equivocado sin que nadie lo note."""
+    a = agente_falso(["x"])
+    a.config.zona_horaria = "Marte/Cráter_Gale"
+
+    with pytest.raises(Exception):
+        a._armar_entrada({"messages": []})
 
 
 def test_avisa_si_falta_la_clave(monkeypatch):
