@@ -644,6 +644,49 @@ todos en `web/webhook.py`:
   cooldown de 5 minutos por tipo de error para no convertirse en spam
   mientras la misma falla sigue activa.
 
+## Dónde termina el dato de una persona (para hablarlo con el cliente)
+
+Útil el día que el negocio pregunta "¿y lo que me cuenta la gente, dónde
+queda?" — por ejemplo un consultorio donde `aclaracion` (`anotar_reserva`,
+`herramientas.py`) puede terminar teniendo un motivo de consulta, no solo
+"una alergia" o "un pedido especial". El agente no le pone ningún límite
+especial a ese campo: es texto libre, y termina en varios lugares distintos
+a la vez, cada uno con dueño distinto:
+
+- **Google Calendar** — `calendario.crear_evento()` lo mete en la
+  descripción del evento, junto con la marca `"Conversación: <id>"` que
+  usan `recordatorios.py` y `cancelar_mi_reserva`/`reprogramar_mi_reserva`
+  para saber de quién es el turno. Vive en la cuenta de Google del negocio,
+  no en la tuya — quien tenga acceso a ese calendario lo ve.
+- **Chatwoot** — `Chatwoot.anotar()` deja una nota privada en la
+  conversación, visible para cualquiera del equipo del negocio con acceso a
+  esa bandeja. No le llega al paciente (es nota, no mensaje).
+- **Postgres (`MODO=produccion`)** — el checkpointer de LangGraph guarda la
+  conversación **entera**, cada mensaje, **para siempre**. No hay ningún
+  borrado automático hoy: `MEMORIA_MENSAJES` solo recorta cuánto le mandás
+  al modelo en el próximo pedido (ver `_recortar()` en `agente.py`), no
+  borra nada de la base. Si en algún momento se agrega una política de
+  retención (borrar conversaciones sin actividad hace X días), es un script
+  aparte, con el mismo espíritu que `recordatorios.py`: corre solo, no
+  toca nada si no hay algo para borrar.
+- **El backup de esa Postgres** — mismo dato, una copia más, en el disco
+  del servidor (ver la sección de Coolify más abajo si hay una, o el panel
+  directamente). Con retención "sin límite" hoy: se acumulan para siempre
+  también.
+- **El proveedor del modelo** (Anthropic/OpenAI/Gemini, según `PROVEEDOR`)
+  — cada mensaje de la conversación se le manda para que el agente pueda
+  responder. Sale de este repo hacia la política de datos de esa empresa,
+  no algo que controle el código de acá.
+- **La alerta de Telegram** (`alertas.py`) — solo si `responder()` revienta:
+  manda el tipo de error y el id de conversación, no el contenido de los
+  mensajes.
+
+Nada de esto es un bug: es cómo está armado hoy, sin ninguna política de
+borrado. Si el negocio necesita algo más estricto (borrar a pedido, no
+guardar cierto tipo de dato), es una conversación de producto antes que de
+código — este bloque existe para tenerla con datos concretos en la mano,
+no de memoria.
+
 
 ## Hacia dónde va (para no diseñar en contra)
 
