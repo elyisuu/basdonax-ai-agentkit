@@ -489,6 +489,47 @@ def test_si_el_modelo_falla_se_le_avisa_a_la_persona():
     assert "rompió" in canal.envios()[0]
 
 
+def test_el_error_que_ve_la_persona_no_es_el_crudo():
+    """Un cliente de WhatsApp no tiene que ver un stack trace de Python.
+
+    Antes esto mandaba el error tal cual (regla general del proyecto para
+    servidor.py/chat.py); en el webhook de producción es al cliente de una
+    empresa a quien le llega, así que va un mensaje genérico. El detalle
+    real se sigue logueando (ver AGENTS.md)."""
+    from test_agente import agente_falso
+
+    canal = ChatwootFalso()
+    agente = agente_falso([])  # sin respuestas: el modelo falso revienta
+
+    with cliente(canal, agente) as web:
+        web.post("/chatwoot/secreto", json=evento("hola"))
+
+    assert "StopIteration" not in canal.envios()[0]
+
+
+def test_una_falla_dispara_una_alerta(monkeypatch):
+    """El dueño del bot se tiene que enterar antes que el cliente le avise."""
+    from test_agente import agente_falso
+
+    avisos = []
+    monkeypatch.setattr(
+        "agente.web.webhook.alertas.avisar",
+        lambda *a: avisos.append(a),
+    )
+
+    canal = ChatwootFalso()
+    agente = agente_falso([])
+    agente.config.alerta_telegram_token = "token-de-prueba"
+    agente.config.alerta_telegram_chat_id = "123"
+
+    with cliente(canal, agente) as web:
+        web.post("/chatwoot/secreto", json=evento("hola"))
+
+    assert len(avisos) == 1
+    assert avisos[0][0] == "token-de-prueba"
+    assert avisos[0][1] == "123"
+
+
 def test_el_salud_contesta():
     """Coolify le pega a esto; si no contesta, reinicia el contenedor."""
     from test_agente import agente_falso
@@ -498,3 +539,24 @@ def test_el_salud_contesta():
 
     assert respuesta.status_code == 200
     assert respuesta.json()["estado"] == "ok"
+
+
+def test_el_salud_avisa_si_la_memoria_esta_caida(monkeypatch):
+    """El caso que motivó este chequeo: el proceso vivo, Postgres no.
+
+    Antes /salud contestaba "ok" sin tocar la base, así que Coolify no se
+    enteraba de esto — el bot quedaba "sano" y mudo hasta que alguien
+    reiniciaba a mano."""
+    from test_agente import agente_falso
+
+    monkeypatch.setattr(
+        "agente.web.webhook.verificar_memoria",
+        lambda checkpointer: "OperationalError: consuming input failed",
+    )
+
+    with cliente(ChatwootFalso(), agente_falso(["hola"])) as web:
+        respuesta = web.get("/salud")
+
+    assert respuesta.status_code == 503
+    assert respuesta.json()["estado"] == "error"
+    assert "OperationalError" in respuesta.json()["error_memoria"]

@@ -43,6 +43,7 @@ Lo que importa acá es qué hace cada uno:
 | `horario.py` | El horario de atención (`HORARIO_DESDE/HASTA`, `DIAS_CERRADOS`), opcional |
 | `aprobacion.py` | Firma y valida los links de aprobar/rechazar una reserva pendiente |
 | `reintentos.py` | Backoff para las llamadas HTTP a Chatwoot y Google Calendar |
+| `alertas.py` | Avisa por Telegram (a un chat propio) cuando algo se rompe en producción |
 | `recordatorios.py` | Programa aparte (raíz del repo): recordatorios de turnos por WhatsApp, para dejar programado (Scheduled Task) |
 | `modelos.py` | Crea el modelo y le pregunta al proveedor cuáles tiene |
 | `memoria.py` | Los checkpointers: `ram` / `sqlite` / `postgres` |
@@ -211,8 +212,16 @@ Cosas que parecen bugs y no lo son, o que cuestan de encontrar:
   o condicionar este bloque.
 - **`check_same_thread=False`** en la conexión de SQLite: el servidor web
   atiende en varios hilos y sin eso rompe.
-- **El pool de Postgres se deja abierto a propósito** en `memoria.postgres()`.
-  Si se cierra el context manager, el checkpointer muere en el primer mensaje.
+- **`memoria.postgres()` usa un `ConnectionPool` (psycopg_pool), no una
+  conexión única.** Nos pasó en producción: con una sola conexión abierta al
+  arrancar el proceso, si Postgres la cortaba sola (un blip de red, un
+  timeout de conexión idle — Postgres seguía sano, solo se caía el cable) el
+  checkpointer quedaba muerto hasta que alguien lo notaba a mano y
+  reiniciaba. Con un pool, cada operación pide una conexión (la librería se
+  encarga, ver `_internal.get_connection`) y el pool reabre solo las que se
+  cortaron. De paso, esto también sacó el truco a mano que hacía falta antes
+  para que el recolector de basura no cerrara la conexión (`PostgresSaver`
+  ya guarda el pool como `self.conn`, y con eso alcanza).
 - **`langgraph-checkpoint-postgres` tiene que ser 3.x.** La 2.x arrastra un
   `langgraph-checkpoint` viejo (2.1) que se pelea con `langgraph` 1.2 y con el
   checkpointer de SQLite. `pip install` lo deja instalar igual y lo avisa como
@@ -602,6 +611,38 @@ reintentan hasta 3 veces con backoff (0.5s, 1s) antes de subir el error.
 Solo reintenta errores de red y 5xx — un 4xx (token vencido, pedido mal
 armado) sube de una, porque insistir no lo arregla y solo demora la
 respuesta a la persona.
+
+## Que la falla se note sola (no que la note un cliente)
+
+Caso real que motivó esto: la conexión a Postgres se cortó sola en
+producción; el proceso del webhook siguió vivo, así que Coolify lo seguía
+mostrando sano, y nadie se enteró hasta que alguien preguntó algo por
+WhatsApp y vio el error crudo de Python en la respuesta. Tres cambios,
+todos en `web/webhook.py`:
+
+- **`/salud` ahora prueba la memoria de verdad** (`memoria.verificar()`),
+  no solo contesta "ok". Para Postgres hace un `SELECT 1` contra el pool;
+  para SQLite no hace falta nada, es un archivo local. Si la memoria no
+  contesta, `/salud` devuelve 503 — así Coolify se entera y reinicia el
+  contenedor solo, en vez de mostrarlo "sano" mientras nadie recibe
+  respuesta.
+- **La persona ya no ve el error crudo.** Antes, cuando `agente.responder_partido()`
+  reventaba, el mensaje que salía por WhatsApp era literalmente
+  `f"Se me rompió algo: {type(e).__name__}: {e}"` — siguiendo la regla
+  general del proyecto de no esconder el error del proveedor (ver "Reglas
+  al escribir código acá"). Esa regla tiene sentido cuando "el usuario" sos
+  vos probando en `servidor.py`/`chat.py`; en el webhook de WhatsApp del
+  otro lado hay un cliente de verdad de la empresa que te contrata, y un
+  `OperationalError` en pleno chat no es información, es mala imagen. Ahora
+  la persona ve `MENSAJE_ERROR_GENERICO` (uno solo, fijo) y el error real
+  sigue yendo a los logs igual que antes — es la única excepción a esa
+  regla, y queda documentada acá a propósito, como pide la regla misma.
+- **`alertas.py` avisa por Telegram** cuando `responder()` revienta o
+  `/salud` detecta la memoria caída — un bot aparte del que atiende
+  clientes (`ALERTA_TELEGRAM_TOKEN`/`ALERTA_TELEGRAM_CHAT_ID` en el `.env`,
+  los dos opcionales: sin ellos no avisa nada y no rompe nada). Tiene un
+  cooldown de 5 minutos por tipo de error para no convertirse en spam
+  mientras la misma falla sigue activa.
 
 
 ## Hacia dónde va (para no diseñar en contra)

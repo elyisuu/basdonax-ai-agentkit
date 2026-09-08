@@ -54,6 +54,12 @@ class Config:
     # de Telegram; el resto del proyecto ni lo mira.
     telegram_token: str = ""
 
+    # -- Alertas al dueño del bot: solo las mira alertas.py / web/webhook.py -
+    # Un bot de Telegram aparte (no el de arriba, que es para clientes) para
+    # avisar cuando algo se rompe en producción. Sin las dos, no avisa nada.
+    alerta_telegram_token: str = ""
+    alerta_telegram_chat_id: str = ""
+
     # -- Chatwoot: solo lo mira el webhook (web/webhook.py) ------------------
     chatwoot_url: str = ""
     chatwoot_token: str = ""
@@ -175,6 +181,10 @@ class Config:
             sqlite_ruta=os.getenv("SQLITE_RUTA", "datos/conversaciones.db"),
             postgres_dsn=(os.getenv("POSTGRES_DSN") or "").strip(),
             telegram_token=(os.getenv("TELEGRAM_TOKEN") or "").strip(),
+            alerta_telegram_token=(os.getenv("ALERTA_TELEGRAM_TOKEN") or "").strip(),
+            alerta_telegram_chat_id=(
+                os.getenv("ALERTA_TELEGRAM_CHAT_ID") or ""
+            ).strip(),
             chatwoot_url=(os.getenv("CHATWOOT_URL") or "").strip(),
             chatwoot_token=(os.getenv("CHATWOOT_TOKEN") or "").strip(),
             chatwoot_cuenta_id=(os.getenv("CHATWOOT_CUENTA_ID") or "1").strip(),

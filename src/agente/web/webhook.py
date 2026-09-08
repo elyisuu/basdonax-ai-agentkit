@@ -35,14 +35,28 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import aprobacion
+from .. import alertas, aprobacion
 from ..agente import Agente
 from ..calendario import Calendario
 from ..canales.buffer import BufferDeMensajes
 from ..canales.chatwoot import Chatwoot
 from ..config import Config
+from ..memoria import verificar as verificar_memoria
 
 registro = logging.getLogger("agente.webhook")
+
+# Lo que ve la PERSONA cuando el agente revienta. A propósito no es el
+# error crudo (antes sí lo era, siguiendo la regla general de "el error del
+# proveedor no se esconde" — ver AGENTS.md): esa regla tiene sentido cuando
+# "el usuario" sos vos probando en servidor.py/chat.py, pero acá del otro
+# lado hay un cliente de verdad de la empresa que te contrata, y un
+# "OperationalError: consuming input failed..." en pleno WhatsApp no es
+# información, es una mala experiencia. El detalle real sigue yendo a los
+# logs (y, si está configurado, a la alerta de Telegram) tal cual antes.
+MENSAJE_ERROR_GENERICO = (
+    "Uy, se me rompió algo de mi lado. Ya me avisaron y lo estamos mirando "
+    "— probá de nuevo en un rato."
+)
 
 
 def crear_app(
@@ -102,13 +116,21 @@ def crear_app(
                     agente.responder_partido, texto, conversacion
                 )
             except Exception as e:
-                # El error del proveedor no se esconde: se lo decimos a la
-                # persona y queda en los logs. Pero no volteamos el servidor,
-                # porque atiende a varias personas y una falla con una no
-                # puede dejar sin respuesta a las demás.
+                # El detalle real queda en los logs y, si está configurado,
+                # en la alerta de Telegram — a la persona le llega un
+                # mensaje genérico (ver MENSAJE_ERROR_GENERICO, arriba).
+                # Tampoco volteamos el servidor: atiende a varias personas y
+                # una falla con una no puede dejar sin respuesta a las demás.
                 aviso = f"{type(e).__name__}: {e}"
                 registro.error("[%s] %s", conversacion, aviso)
-                mensajes = [f"Se me rompió algo: {aviso}"]
+                mensajes = [MENSAJE_ERROR_GENERICO]
+                await asyncio.to_thread(
+                    alertas.avisar,
+                    config.alerta_telegram_token,
+                    config.alerta_telegram_chat_id,
+                    type(e).__name__,
+                    f"[agente-whatsapp] falló una respuesta (conversación {conversacion}): {aviso}",
+                )
 
             try:
                 await asyncio.to_thread(canal.enviar, conversacion, mensajes)
@@ -142,18 +164,41 @@ def crear_app(
     # -- Las rutas -------------------------------------------------------------
 
     @app.get("/salud")
-    async def salud() -> dict:
+    async def salud() -> JSONResponse:
         """Para que el servidor sepa que la app está viva.
 
         Coolify le pega a esto cada tanto. Si no contesta, reinicia el
         contenedor.
+
+        Antes esto contestaba "ok" sin tocar la base — y nos pasó en
+        producción que la conexión a Postgres se cortó sola mientras el
+        proceso seguía vivo: Coolify lo mostraba sano y nadie recibía
+        respuesta hasta que un cliente se quejaba. Ahora `verificar_memoria`
+        (memoria.py) hace un chequeo de verdad contra Postgres — para
+        SQLite no hace falta, es un archivo local.
         """
-        return {
-            "estado": "ok",
+        error_memoria = await asyncio.to_thread(verificar_memoria, agente.checkpointer)
+
+        cuerpo = {
+            "estado": "ok" if error_memoria is None else "error",
             "proveedor": config.proveedor,
             "modelo": config.modelo,
             "memoria": "postgres" if config.modo == "produccion" else "sqlite",
         }
+
+        if error_memoria is None:
+            return JSONResponse(cuerpo)
+
+        cuerpo["error_memoria"] = error_memoria
+        registro.error("Chequeo de salud: la memoria no responde: %s", error_memoria)
+        await asyncio.to_thread(
+            alertas.avisar,
+            config.alerta_telegram_token,
+            config.alerta_telegram_chat_id,
+            "salud_memoria",
+            f"[agente-whatsapp] /salud detectó la memoria caída: {error_memoria}",
+        )
+        return JSONResponse(cuerpo, status_code=503)
 
     @app.post("/chatwoot/{token}")
     async def entrante(token: str, pedido: Request) -> JSONResponse:

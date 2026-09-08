@@ -291,52 +291,47 @@ def test_modo_test_guarda_en_sqlite(tmp_path):
     assert archivo.exists(), "tendría que haber creado el archivo de la base"
 
 
-def test_la_conexion_de_postgres_no_se_la_lleva_el_recolector(monkeypatch):
-    """El bug que solo aparece con el agente corriendo un rato.
+def test_el_pool_de_postgres_no_se_lo_lleva_el_recolector(monkeypatch):
+    """Versión actual de un bug viejo que solo aparecía con el agente
+    corriendo un rato (antes: una única conexión guardada en un generador
+    que el recolector de basura podía cerrar sola; ver el historial de
+    memoria.py y AGENTS.md).
 
-    `PostgresSaver.from_conn_string()` es un generador: adentro tiene un
-    `with Connection.connect(...)`. Si nadie se guarda una referencia, el
-    recolector de basura lo destruye, y destruirlo cierra la conexión.
-
-    No falla al conectar —ahí anda todo— sino en el primer mensaje que llega
-    después, con un "the connection is closed" que no se parece en nada a su
-    causa. En un script corto ni se nota, porque el proceso termina antes de
-    que el recolector actúe.
+    Hoy `postgres()` arma un `ConnectionPool` en vez de una conexión suelta,
+    y se lo pasa a `PostgresSaver`, que lo guarda como `self.conn` — no hace
+    falta ningún truco a mano: mientras viva el guardador, vive el pool.
+    Esta prueba confirma justamente eso, sin salir a la red: un pool y un
+    `setup()` de mentira.
     """
     import gc
-    from contextlib import contextmanager
 
-    import langgraph.checkpoint.postgres as postgres_de_langgraph
+    import psycopg_pool
+    from langgraph.checkpoint.postgres import PostgresSaver
 
     from agente.memoria import postgres
 
-    cerrada: list[bool] = []
+    cerrado: list[bool] = []
 
-    class GuardadorFalso:
-        def setup(self):
+    class PoolFalso:
+        check_connection = staticmethod(lambda conn: None)
+
+        def __init__(self, dsn, **kwargs):
             pass
 
-    @contextmanager
-    def conexion_falsa(dsn, **kwargs):
-        try:
-            yield GuardadorFalso()
-        finally:
-            cerrada.append(True)
+        def close(self):
+            cerrado.append(True)
 
-    monkeypatch.setattr(
-        postgres_de_langgraph.PostgresSaver,
-        "from_conn_string",
-        staticmethod(conexion_falsa),
-    )
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", PoolFalso)
+    monkeypatch.setattr(PostgresSaver, "setup", lambda self: None)
 
     guardador = postgres("postgresql://loquesea")
     gc.collect()  # el recolector, ahora y a propósito
 
-    assert not cerrada, (
-        "el recolector cerró la conexión: al checkpointer le falta guardarse "
-        "el contexto, y el primer mensaje va a fallar con 'connection is closed'"
+    assert not cerrado, (
+        "el recolector cerró el pool: al checkpointer le falta guardarse la "
+        "referencia, y el primer mensaje va a fallar con 'connection is closed'"
     )
-    assert guardador is not None
+    assert isinstance(guardador.conn, PoolFalso)
 
 
 def test_modo_invalido_avisa(monkeypatch):

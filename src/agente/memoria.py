@@ -45,6 +45,29 @@ def crear_memoria(config: "Config") -> "BaseCheckpointSaver":
     return sqlite(config.sqlite_ruta)
 
 
+def verificar(checkpointer: "BaseCheckpointSaver") -> str | None:
+    """Prueba que la memoria funcione de verdad. `None` = sana.
+
+    La usa /salud (web/webhook.py). Nace del mismo caso real de arriba: un
+    `/salud` que solo contesta "ok" sin tocar la base no se entera de que
+    Postgres está inalcanzable — el proceso sigue vivo, así que Coolify lo
+    sigue mostrando sano mientras nadie recibe respuesta.
+    Solo hace falta para Postgres: SQLite es un archivo local, si el
+    proceso está vivo funciona. Se detecta por el nombre del módulo en vez
+    de importar `PostgresSaver` para no obligar a tener psycopg instalado
+    en MODO=test.
+    """
+    if not type(checkpointer).__module__.startswith("langgraph.checkpoint.postgres"):
+        return None
+
+    try:
+        with checkpointer.conn.connection(timeout=5) as conexion:
+            conexion.execute("SELECT 1")
+        return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -87,6 +110,8 @@ def postgres(dsn: str) -> "BaseCheckpointSaver":
     """
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
     except ImportError as e:
         # El motivo real va adentro del mensaje a propósito. Son dos fallas
         # distintas que se ven igual desde afuera: que falte el paquete, o que
@@ -99,26 +124,37 @@ def postgres(dsn: str) -> "BaseCheckpointSaver":
             f"El error de abajo dice cuál de los dos falta:\n    {type(e).__name__}: {e}"
         ) from None
 
-    # La conexión queda abierta mientras viva el proceso: si la cerráramos
-    # acá, el checkpointer dejaría de funcionar en el primer mensaje.
-    contexto = PostgresSaver.from_conn_string(dsn)
-    guardador = contexto.__enter__()
+    # Un pool en vez de una única conexión fija. Antes `PostgresSaver` vivía
+    # sobre UNA conexión abierta al arrancar el proceso y nunca más tocada:
+    # si Postgres la cortaba sola (un blip de red, un timeout de conexión
+    # idle — pasó en producción, Postgres seguía sano, solo se cayó el
+    # cable) el checkpointer quedaba muerto hasta que alguien lo notaba y
+    # reiniciaba el proceso a mano. `/salud` ni se enteraba, porque no
+    # tocaba la base (ver web/webhook.py).
+    #
+    # Con un pool, cada operación de PostgresSaver pide una conexión nueva
+    # (`_internal.get_connection`, en la librería) en vez de reusar siempre
+    # la misma, y el pool se encarga de descartar las que se cortaron y
+    # abrir otras — sin que el agente se entere. `max_idle`/`max_lifetime`
+    # (los defaults de psycopg_pool: 10 min / 1 hora) además reciclan las
+    # conexiones antes de que lleguen a quedar tan viejas como para que
+    # algún firewall/NAT de por medio las corte solo.
+    #
+    # kwargs replica lo que `PostgresSaver.from_conn_string` le pasaba a la
+    # conexión única (autocommit, sin prepared statements, filas como dict).
+    pool = ConnectionPool(
+        dsn,
+        min_size=1,
+        max_size=5,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        check=ConnectionPool.check_connection,
+        open=True,
+    )
+    guardador = PostgresSaver(pool)
     guardador.setup()
 
-    # Y esta línea es la que hace que eso sea verdad. `from_conn_string` no es
-    # un objeto cualquiera: es un generador (`with Connection.connect(...) as
-    # conn: yield ...`). Si `contexto` se queda sin referencias al salir de
-    # esta función, el recolector de basura lo destruye, y destruirlo ejecuta
-    # el cierre del `with` — o sea, **cierra la conexión**. No falla acá:
-    # falla más tarde, con un "the connection is closed" en el primer mensaje
-    # que llega, cuando ya nadie se acuerda de esta línea.
-    #
-    # Guardándolo en el propio guardador, la conexión vive exactamente lo que
-    # vive la memoria del agente.
-    #
-    # Ojo con probar esto en un script corto: si el proceso termina enseguida,
-    # el recolector no llega a actuar y parece que anda igual. Se nota recién
-    # cuando el agente queda corriendo un rato, como en el bot de Telegram.
-    guardador._contexto_abierto = contexto
-
+    # A diferencia de antes, acá no hace falta ningún truco para que el pool
+    # sobreviva al recolector de basura: `PostgresSaver` ya lo guarda como
+    # `self.conn`, y `guardador` es lo que se devuelve y queda referenciado
+    # por el agente. El pool vive exactamente lo que vive la memoria.
     return guardador
