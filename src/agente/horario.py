@@ -113,27 +113,44 @@ def validar(
     hasta: str = "",
     cerrados: str = "",
     franjas: str = "",
+    ahora: datetime | None = None,
 ) -> None:
     """Tira ErrorDeHorario si (fecha, hora) cae fuera de la atención.
 
     Con `desde`, `hasta`, `cerrados` y `franjas` vacíos (el caso por
-    defecto), no valida nada: el negocio que no configuró horario acepta
-    cualquiera, como pasaba antes de este módulo.
+    defecto), no valida nada de horario de atención: el negocio que no
+    configuró nada acepta cualquiera, como pasaba antes de este módulo.
 
     `franjas` (HORARIO_FRANJAS) es para el horario partido — si viene con
     algo, manda por sobre `desde`/`hasta`: alcanza con que la hora caiga en
     CUALQUIERA de sus rangos. Sin `franjas`, se usa el rango único de
     `desde`/`hasta` (un solo turno corrido), como antes de que existiera
     el horario partido.
+
+    `ahora` es aparte de todo lo anterior: si se pasa, rechaza una fecha u
+    hora anterior a `ahora`, sin importar si hay horario de atención
+    configurado o no — reservar para el pasado no es una preferencia del
+    negocio, es que el turno ya sucedió. Nadie lo llamaba con esto hasta
+    ahora, así que quien no lo use (`ahora=None`, el default) no valida
+    esto — mismo criterio que el resto de los parámetros opcionales.
     """
     dia = datetime.strptime(fecha, "%Y-%m-%d").date()
+    hora_pedida = datetime.strptime(hora, "%H:%M").time()
+
+    if ahora is not None:
+        pedida = datetime.combine(dia, hora_pedida, tzinfo=ahora.tzinfo)
+        if pedida < ahora:
+            raise ErrorDeHorario(
+                f"El {fecha} a las {hora} ya pasó — no se puede reservar una "
+                "fecha u hora anterior a ahora. Preguntale a la persona por "
+                "una fecha futura."
+            )
+
     if dia.weekday() in dias_cerrados(cerrados):
         raise ErrorDeHorario(
             f"El {fecha} el negocio está cerrado. Ofrecele otro día a la "
             "persona."
         )
-
-    hora_pedida = datetime.strptime(hora, "%H:%M").time()
 
     lista_franjas = franjas_de(franjas)
     if lista_franjas:

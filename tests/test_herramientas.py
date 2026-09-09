@@ -243,6 +243,7 @@ class _AjustesDeMentira:
         chatwoot_etiqueta_humano="humano",
         alerta_telegram_token="",
         alerta_telegram_chat_id="",
+        zona_horaria="UTC",
     ) -> None:
         self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
         self.url_publica = url_publica
@@ -255,6 +256,7 @@ class _AjustesDeMentira:
         self.chatwoot_etiqueta_humano = chatwoot_etiqueta_humano
         self.alerta_telegram_token = alerta_telegram_token
         self.alerta_telegram_chat_id = alerta_telegram_chat_id
+        self.zona_horaria = zona_horaria
 
 
 @pytest.fixture(autouse=True)
@@ -268,6 +270,13 @@ def _ajustes_por_defecto(monkeypatch):
     monkeypatch.setattr(
         herramientas, "_ajustes_del_config", lambda config: _AjustesDeMentira()
     )
+    # anotar_reserva también rechaza fecha/hora ya pasada, comparando
+    # contra _ahora(ajustes) — sin fijarla acá, esta suite se rompería
+    # sola el día que la fecha real pase las fechas de prueba de más
+    # arriba (2026-09-12 y parecidas, usadas en tests que no tienen nada
+    # que ver con esto). Los tests que sí prueban el rechazo por fecha
+    # pasada la pisan de nuevo con algo más cercano a esas fechas.
+    monkeypatch.setattr(herramientas, "_ahora", lambda ajustes: datetime(2020, 1, 1))
 
 
 def _sin_aprobacion(monkeypatch) -> None:
@@ -659,6 +668,70 @@ def test_dentro_del_horario_sigue_andando(monkeypatch):
     )
 
     assert "pendiente" in resultado.lower()
+
+
+def test_no_se_puede_reservar_una_fecha_ya_pasada(monkeypatch):
+    """Reproducido: horario.validar() no chequeaba esto — se podía anotar
+    un turno para una fecha que ya pasó, con horario configurado o sin
+    configurar nada."""
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+    monkeypatch.setattr(herramientas, "_ahora", lambda ajustes: datetime(2026, 9, 12, 10, 0))
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "09:00"},
+        config=_config(),
+    )
+
+    assert "ya pasó" in resultado.lower()
+    assert chatwoot.notas == []
+
+
+def test_se_puede_reservar_una_fecha_futura_con_ahora_fijo(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+    monkeypatch.setattr(herramientas, "_ahora", lambda ajustes: datetime(2026, 9, 12, 10, 0))
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-09-12", "hora": "11:00"},
+        config=_config(),
+    )
+
+    assert "pendiente" in resultado.lower()
+
+
+def test_fecha_con_formato_invalido_no_revienta(monkeypatch):
+    """Reproducido: día y mes invertidos (u otro formato que strptime no
+    entiende) subía como ValueError sin controlar — la persona veía el
+    mensaje genérico de error en vez de que el bot le pida la fecha de
+    nuevo."""
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "12-09-2026", "hora": "12:00"},
+        config=_config(),
+    )
+
+    assert "no entendí" in resultado.lower()
+    assert chatwoot.notas == []
+
+
+def test_fecha_inexistente_no_revienta(monkeypatch):
+    """Un 30 de febrero: mismo caso que el formato inválido."""
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Juan", "personas": 2, "fecha": "2026-02-30", "hora": "12:00"},
+        config=_config(),
+    )
+
+    assert "no entendí" in resultado.lower()
 
 
 # -- Cancelar y reprogramar mi reserva -----------------------------------------------

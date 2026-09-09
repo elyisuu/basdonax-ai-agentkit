@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import time
+from datetime import datetime, time
 from pathlib import Path
 
 import pytest
@@ -71,6 +71,45 @@ def test_solo_hasta_sin_desde():
 
     with pytest.raises(horario.ErrorDeHorario):
         horario.validar("2026-09-12", "23:00", "", "20:00", "")
+
+
+# -- Fecha/hora ya pasada ------------------------------------------------------------
+
+
+def test_sin_ahora_no_valida_fecha_pasada():
+    """El default (ahora=None): nadie lo llamaba con esto hasta ahora, así
+    que ningún caller existente empieza a validar esto sin pedirlo."""
+    horario.validar("2020-01-01", "10:00")
+
+
+def test_fecha_pasada_explota():
+    ahora = datetime(2026, 9, 12, 10, 0)
+    with pytest.raises(horario.ErrorDeHorario, match="ya pasó"):
+        horario.validar("2026-09-11", "10:00", ahora=ahora)
+
+
+def test_hora_pasada_el_mismo_dia_explota():
+    ahora = datetime(2026, 9, 12, 10, 0)
+    with pytest.raises(horario.ErrorDeHorario, match="ya pasó"):
+        horario.validar("2026-09-12", "09:00", ahora=ahora)
+
+
+def test_hora_futura_el_mismo_dia_no_explota():
+    ahora = datetime(2026, 9, 12, 10, 0)
+    horario.validar("2026-09-12", "11:00", ahora=ahora)
+
+
+def test_fecha_futura_no_explota():
+    ahora = datetime(2026, 9, 12, 10, 0)
+    horario.validar("2026-09-13", "00:00", ahora=ahora)
+
+
+def test_fecha_pasada_no_le_importa_si_hay_horario_configurado():
+    """Rechazar el pasado no depende de HORARIO_DESDE/HASTA: es una regla
+    aparte, no una preferencia del negocio."""
+    ahora = datetime(2026, 9, 12, 10, 0)
+    with pytest.raises(horario.ErrorDeHorario, match="ya pasó"):
+        horario.validar("2026-09-11", "12:00", desde="09:00", hasta="20:00", ahora=ahora)
 
 
 # -- Horario partido (franjas) ------------------------------------------------------

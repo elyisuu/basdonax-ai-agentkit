@@ -67,6 +67,7 @@ import json
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -276,9 +277,23 @@ def anotar_reserva(
             ajustes.horario_hasta,
             ajustes.dias_cerrados,
             ajustes.horario_franjas,
+            ahora=_ahora(ajustes),
         )
     except horario.ErrorDeHorario as e:
         return str(e)
+    except Exception as e:
+        # fecha/hora en un formato que no esperábamos (un 30 de febrero, el
+        # día y el mes invertidos, cualquier cosa que strptime no entienda)
+        # subía como ValueError sin controlar — LangGraph cortaba la
+        # respuesta entera y la persona veía el mensaje genérico de error
+        # en vez de que el bot le pida la fecha de nuevo. Mismo criterio
+        # que el resto del archivo (ver clima()): la herramienta devuelve
+        # el problema como texto, no lo deja explotar.
+        return (
+            f"No entendí la fecha o la hora ('{fecha}' / '{hora}'): tienen "
+            "que venir como AAAA-MM-DD y HH:MM. Pedíselas de nuevo a la "
+            "persona y volvé a intentar."
+        )
 
     chatwoot = _chatwoot_del_config(config)
     conversacion = _conversacion_de(config)
@@ -730,6 +745,17 @@ def _duracion_minutos(evento: dict) -> int:
     inicio = datetime.fromisoformat(evento["start"]["dateTime"])
     fin = datetime.fromisoformat(evento["end"]["dateTime"])
     return max(1, int((fin - inicio).total_seconds() // 60))
+
+
+def _ahora(ajustes: Config) -> datetime:
+    """La hora de ahora mismo, en la zona horaria del negocio.
+
+    La usa anotar_reserva() para rechazar una fecha/hora ya pasada. Función
+    aparte (mismo criterio que _horas_hasta_el_turno(), un poco más abajo)
+    para que los tests la puedan reemplazar por un valor fijo, en vez de
+    pelearse con la hora real de la máquina que corre el test.
+    """
+    return datetime.now(ZoneInfo(ajustes.zona_horaria or "UTC"))
 
 
 def _horas_hasta_el_turno(evento: dict) -> float:
