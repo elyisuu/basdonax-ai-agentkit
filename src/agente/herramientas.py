@@ -6,7 +6,7 @@ y LangGraph la corre y le devuelve el resultado. Por eso el **docstring importa
 tanto como el código**: es literalmente lo único que el modelo lee para decidir
 si esta herramienta le sirve y qué mandarle.
 
-Son seis:
+Son siete:
 
   · `clima`                  → no necesita nada del canal, funciona en
                                 cualquiera.
@@ -38,6 +38,13 @@ Son seis:
                                 vez de elegir otro. Deja una nota en
                                 Chatwoot para que el equipo avise a mano si
                                 se libera — no hay re-aviso automático.
+  · `derivar_a_persona`      → cuando quien escribe pide explícitamente
+                                hablar con un humano. Le pone la etiqueta
+                                CHATWOOT_ETIQUETA_HUMANO a la conversación
+                                (apaga al bot ahí, ver
+                                Chatwoot._la_atiende_una_persona()) y, si
+                                está configurado, avisa por Telegram —
+                                mismo mecanismo que alertas.py.
 
 `clima` usa **Open-Meteo** (https://open-meteo.com), que es gratis, no pide
 registro y no usa clave de API. Eso es a propósito: este repo es para probar
@@ -64,7 +71,7 @@ from datetime import datetime
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from . import aprobacion, horario
+from . import alertas, aprobacion, horario
 from .calendario import Calendario, conversacion_del_evento
 from .canales.chatwoot import Chatwoot
 from .config import Config
@@ -580,6 +587,69 @@ def anotar_lista_espera(
     )
 
 
+@tool
+def derivar_a_persona(motivo: str, config: RunnableConfig) -> str:
+    """Deriva la conversación a una persona del negocio.
+
+    Usala cuando quien te escribe pida explícitamente hablar con una
+    persona, un humano, un asistente de verdad, un encargado, o diga que no
+    quiere seguir hablando con un bot. No la uses solo porque la pregunta es
+    difícil o no tenés la respuesta — para eso, decile que no tenés ese
+    dato y seguí la charla; esta es específicamente para cuando LA PERSONA
+    pide el traspaso.
+
+    Después de llamarla, el bot deja de contestar solo en esta conversación
+    hasta que alguien del negocio la revise — no hace falta que hagas nada
+    más que avisarle a la persona que ya se derivó.
+
+    Args:
+        motivo: Un resumen corto de qué necesita, para que quien la
+            atienda no tenga que releer toda la charla (por ejemplo "quiere
+            cambiar una reserva de grupo grande" o "se queja de un cobro").
+    """
+    chatwoot = _chatwoot_del_config(config)
+    if chatwoot is None:
+        return (
+            "No puedo derivar a una persona en este canal: hace falta "
+            "tener Chatwoot configurado. Decile que por ahora seguís "
+            "atendiendo vos."
+        )
+
+    conversacion = _conversacion_de(config)
+    if not conversacion:
+        return "No puedo derivar a una persona en este canal."
+
+    ajustes = _ajustes_del_config(config)
+    # El mismo nombre que revisa Chatwoot._la_atiende_una_persona() del
+    # lado del webhook — si acá se usara un nombre fijo en vez de leerlo
+    # del .env, un negocio que cambió CHATWOOT_ETIQUETA_HUMANO quedaría con
+    # el traspaso roto sin ningún error que lo avise.
+    etiqueta = ajustes.chatwoot_etiqueta_humano or "humano"
+
+    try:
+        chatwoot.anotar(conversacion, f"Pidió hablar con una persona.\nMotivo: {motivo}")
+        chatwoot.etiquetar(conversacion, etiqueta)
+    except Exception as e:
+        return f"No se pudo derivar la conversación: {type(e).__name__}: {e}"
+
+    # Opcional (ver alertas.py): sin ALERTA_TELEGRAM_TOKEN/CHAT_ID no hace
+    # nada. Sin esto, el traspaso depende de que alguien esté mirando la
+    # bandeja de Chatwoot en ese momento — con esto, se entera aunque no
+    # la esté mirando.
+    alertas.avisar(
+        ajustes.alerta_telegram_token,
+        ajustes.alerta_telegram_chat_id,
+        f"pedido_humano:{conversacion}",
+        f"[agente-whatsapp] alguien pidió hablar con una persona "
+        f"(conversación {conversacion}): {motivo}",
+    )
+
+    return (
+        "Listo, quedó marcada para que la atienda una persona del equipo. "
+        "Avisale a la persona que en breve la atienden por acá."
+    )
+
+
 # Lo que el agente tiene atado. Cuando agregues otra herramienta, sumala acá:
 # es la única lista que mira el grafo.
 HERRAMIENTAS = [
@@ -589,6 +659,7 @@ HERRAMIENTAS = [
     cancelar_mi_reserva,
     reprogramar_mi_reserva,
     anotar_lista_espera,
+    derivar_a_persona,
 ]
 
 

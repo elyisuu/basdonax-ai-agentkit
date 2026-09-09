@@ -26,6 +26,7 @@ from agente.herramientas import (  # noqa: E402
     anotar_reserva,
     cancelar_mi_reserva,
     clima,
+    derivar_a_persona,
     franjas_ocupadas,
     reprogramar_mi_reserva,
 )
@@ -239,6 +240,9 @@ class _AjustesDeMentira:
         horario_franjas="",
         dias_cerrados="",
         cancelacion_horas_minimas=0,
+        chatwoot_etiqueta_humano="humano",
+        alerta_telegram_token="",
+        alerta_telegram_chat_id="",
     ) -> None:
         self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
         self.url_publica = url_publica
@@ -248,6 +252,9 @@ class _AjustesDeMentira:
         self.horario_franjas = horario_franjas
         self.dias_cerrados = dias_cerrados
         self.cancelacion_horas_minimas = cancelacion_horas_minimas
+        self.chatwoot_etiqueta_humano = chatwoot_etiqueta_humano
+        self.alerta_telegram_token = alerta_telegram_token
+        self.alerta_telegram_chat_id = alerta_telegram_chat_id
 
 
 @pytest.fixture(autouse=True)
@@ -992,6 +999,103 @@ def test_anotar_lista_espera_deja_nota_y_etiqueta(monkeypatch):
     assert "anotado" in resultado.lower()
     assert "Juan" in chatwoot.notas[0][1]
     assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_LISTA_ESPERA)]
+
+
+# -- derivar_a_persona ---------------------------------------------------------------
+
+
+def test_derivar_a_persona_sin_chatwoot(monkeypatch):
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = derivar_a_persona.invoke(
+        {"motivo": "quiere hablar con alguien"}, config=_config()
+    )
+
+    assert "chatwoot" in resultado.lower()
+
+
+def test_derivar_a_persona_deja_nota_y_pone_la_etiqueta(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = derivar_a_persona.invoke(
+        {"motivo": "se queja de un cobro"}, config=_config()
+    )
+
+    assert "persona" in resultado.lower()
+    assert "se queja de un cobro" in chatwoot.notas[0][1]
+    assert chatwoot.etiquetas == [("42", "humano")]
+
+
+def test_derivar_a_persona_usa_la_etiqueta_configurada(monkeypatch):
+    """Si el negocio cambió CHATWOOT_ETIQUETA_HUMANO en el .env, tiene que
+    ser la MISMA que después revisa Chatwoot._la_atiende_una_persona() —
+    si acá quedara un nombre fijo, el traspaso quedaría roto en silencio."""
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(chatwoot_etiqueta_humano="atencion-humana"),
+    )
+
+    derivar_a_persona.invoke({"motivo": "algo"}, config=_config())
+
+    assert chatwoot.etiquetas == [("42", "atencion-humana")]
+
+
+def test_derivar_a_persona_avisa_por_telegram_si_esta_configurado(monkeypatch):
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(
+            alerta_telegram_token="tok", alerta_telegram_chat_id="123"
+        ),
+    )
+
+    avisos = []
+    monkeypatch.setattr(
+        herramientas.alertas,
+        "avisar",
+        lambda token, chat_id, clave, texto: avisos.append((token, chat_id, clave, texto)),
+    )
+
+    derivar_a_persona.invoke({"motivo": "urgente"}, config=_config())
+
+    assert len(avisos) == 1
+    token, chat_id, clave, texto = avisos[0]
+    assert (token, chat_id) == ("tok", "123")
+    assert "urgente" in texto
+
+
+def test_derivar_a_persona_sin_telegram_configurado_no_falla(monkeypatch):
+    """alertas.avisar() ya no hace nada sin token/chat_id — esto solo
+    confirma que derivar_a_persona no la rodea con nada que dependa de
+    que esté configurado."""
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = derivar_a_persona.invoke({"motivo": "algo"}, config=_config())
+
+    assert "persona" in resultado.lower()
+
+
+def test_derivar_a_persona_si_chatwoot_falla_avisa_el_error(monkeypatch):
+    class _Explota:
+        def anotar(self, *a, **k):
+            raise RuntimeError("Chatwoot no contestó")
+
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: _Explota())
+
+    resultado = derivar_a_persona.invoke({"motivo": "algo"}, config=_config())
+
+    assert "no se pudo derivar" in resultado.lower()
+
+
+def test_derivar_a_persona_esta_en_la_lista_de_herramientas():
+    assert derivar_a_persona in HERRAMIENTAS
 
 
 # -- franjas_ocupadas -------------------------------------------------------------
