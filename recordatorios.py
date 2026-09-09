@@ -97,15 +97,37 @@ def main() -> int:
             "por acá."
         )
 
+        # Separado en dos try/except a propósito. Reproducido en producción:
+        # el WhatsApp salía bien pero marcar_recordado() fallaba después (un
+        # 403 pasajero de Calendar, por ejemplo) — con los dos pasos en el
+        # mismo try, ese caso se veía en el log igual que "no se avisó",
+        # cuando en realidad la persona SÍ recibió el mensaje, y como
+        # ya_recordado() sigue devolviendo False, la próxima corrida (una
+        # hora después) se lo manda de nuevo. Separarlo no evita el
+        # duplicado —sin una base de datos no hay otra marca que la del
+        # propio evento— pero al menos el log dice la verdad: "avisado" es
+        # avisado, y "no se pudo avisar" es que no salió nada.
         try:
             chatwoot.enviar(conversacion, [mensaje])
-            calendario.marcar_recordado(evento["id"])
-            avisados += 1
-            print(f"{AMBAR}[{conversacion}]{FIN} avisado — {inicio.strftime('%d/%m %H:%M')}")
         except Exception as e:
             # Un aviso que falla no puede cortar los que siguen: son turnos
             # de personas distintas.
             print(f"{ROJO}[{conversacion}] no se pudo avisar: {type(e).__name__}: {e}{FIN}")
+            continue
+
+        try:
+            calendario.marcar_recordado(evento["id"])
+        except Exception as e:
+            print(
+                f"{ROJO}[{conversacion}] se avisó pero no se pudo marcar en "
+                f"el calendario — si el turno sigue en la ventana, la "
+                f"próxima corrida puede volver a avisarlo: "
+                f"{type(e).__name__}: {e}{FIN}"
+            )
+            continue
+
+        avisados += 1
+        print(f"{AMBAR}[{conversacion}]{FIN} avisado — {inicio.strftime('%d/%m %H:%M')}")
 
     print(f"{GRIS}{avisados} de {len(eventos)} turno(s) en la ventana.{FIN}")
     return 0
