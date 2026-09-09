@@ -37,7 +37,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import alertas, aprobacion
 from ..agente import Agente
-from ..calendario import Calendario
+from ..calendario import Calendario, ErrorDeCalendario
 from ..canales.buffer import BufferDeMensajes
 from ..canales.chatwoot import Chatwoot
 from ..config import Config
@@ -236,6 +236,18 @@ def crear_app(
         Es HTML y no JSON a propósito: esto lo abre una persona en el
         navegador, no un programa. No hay login — la seguridad es el token
         de la URL, mismo criterio que /chatwoot/<token> (ver aprobacion.py).
+
+        **Es un GET que ejecuta una acción — a propósito, para que sea un
+        link de un solo clic sin formulario ni JS — pero eso lo hace
+        vulnerable a que alguien más lo dispare sin que la persona lo haya
+        tocado.** Reproducido en producción: la app de Chatwoot en iPhone
+        precargó el link para armar una vista previa de la nota, y ese GET
+        automático ya había aprobado la reserva antes de que el dueño del
+        negocio le diera clic él mismo — el segundo GET (el suyo) chocó
+        contra un evento que ya no estaba "tentative". Por eso, antes de
+        tocar nada, se fija cómo está el evento AHORA: si ya se resolvió
+        (aprobado, o ya no existe porque se rechazó antes), avisa eso en
+        vez de repetir el WhatsApp a la persona y el pedido a Calendar.
         """
         if accion not in aprobacion.ACCIONES:
             return HTMLResponse("Acción desconocida.", status_code=404)
@@ -252,31 +264,51 @@ def crear_app(
             return HTMLResponse("Link inválido o vencido.", status_code=403)
 
         try:
+            # ¿Cómo está el evento ANTES de tocar nada? Un 404/410 acá
+            # significa que ya no existe (un rechazo previo lo borró) — no
+            # es un error, es justo lo que se necesita saber para no repetir
+            # la acción. Cualquier otro código sí es un error de verdad y
+            # sube tal cual al except de abajo.
+            try:
+                evento = await asyncio.to_thread(calendario.obtener_evento, evento_id)
+            except ErrorDeCalendario as e:
+                if e.codigo not in (404, 410):
+                    raise
+                evento = None
+
             if accion == "aprobar":
-                await asyncio.to_thread(calendario.aprobar_evento, evento_id)
-                await asyncio.to_thread(
-                    canal.enviar,
-                    conversacion,
-                    ["¡Tu turno quedó confirmado! Te esperamos."],
-                )
-                await asyncio.to_thread(
-                    canal.etiquetar, conversacion, "reserva-confirmada"
-                )
-                mensaje = "Reserva aprobada. Ya se le avisó a la persona."
+                if evento is None:
+                    mensaje = "Esta reserva ya no existe (puede que se haya rechazado antes)."
+                elif evento.get("status") == "confirmed":
+                    mensaje = "Esta reserva ya estaba aprobada. No hace falta hacer nada más."
+                else:
+                    await asyncio.to_thread(calendario.aprobar_evento, evento_id)
+                    await asyncio.to_thread(
+                        canal.enviar,
+                        conversacion,
+                        ["¡Tu turno quedó confirmado! Te esperamos."],
+                    )
+                    await asyncio.to_thread(
+                        canal.etiquetar, conversacion, "reserva-confirmada"
+                    )
+                    mensaje = "Reserva aprobada. Ya se le avisó a la persona."
             else:
-                await asyncio.to_thread(calendario.cancelar_evento, evento_id)
-                await asyncio.to_thread(
-                    canal.enviar,
-                    conversacion,
-                    [
-                        "Por ese horario no vamos a poder atenderte, "
-                        "disculpá. Escribinos para coordinar otro."
-                    ],
-                )
-                await asyncio.to_thread(
-                    canal.etiquetar, conversacion, "reserva-rechazada"
-                )
-                mensaje = "Reserva rechazada. Ya se le avisó a la persona."
+                if evento is None:
+                    mensaje = "Esta reserva ya había sido rechazada antes."
+                else:
+                    await asyncio.to_thread(calendario.cancelar_evento, evento_id)
+                    await asyncio.to_thread(
+                        canal.enviar,
+                        conversacion,
+                        [
+                            "Por ese horario no vamos a poder atenderte, "
+                            "disculpá. Escribinos para coordinar otro."
+                        ],
+                    )
+                    await asyncio.to_thread(
+                        canal.etiquetar, conversacion, "reserva-rechazada"
+                    )
+                    mensaje = "Reserva rechazada. Ya se le avisó a la persona."
         except Exception as e:
             registro.error("[%s] error al %s la reserva: %s", conversacion, accion, e)
             return HTMLResponse(

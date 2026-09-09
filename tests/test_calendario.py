@@ -418,5 +418,34 @@ def test_un_error_http_se_convierte_en_errordecalendario(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", explota)
 
-    with pytest.raises(ErrorDeCalendario, match="404"):
+    with pytest.raises(ErrorDeCalendario, match="404") as info:
         cal.ocupado("2026-09-12")
+
+    assert info.value.codigo == 404
+
+
+def test_obtener_evento_pide_el_evento_por_id(monkeypatch):
+    import urllib.request
+
+    cal = Calendario(calendario_id="negocio@x.com", credencial_json=CREDENCIAL)
+    monkeypatch.setattr(cal, "_access_token", lambda: "token-de-prueba")
+
+    pedidos = []
+
+    class _Respuesta(__import__("io").BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(pedido, timeout):
+        pedidos.append((pedido.get_method(), pedido.full_url))
+        return _Respuesta(b'{"id": "evento-1", "status": "confirmed"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    assert cal.obtener_evento("evento-1") == {"id": "evento-1", "status": "confirmed"}
+    metodo, url = pedidos[0]
+    assert metodo == "GET"
+    assert url.endswith("/events/evento-1")

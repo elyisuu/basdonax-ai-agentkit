@@ -56,6 +56,15 @@ ESPERA_DE_RED = 20
 class ErrorDeCalendario(Exception):
     """Google Calendar (o la autenticación) contestó algo que no esperábamos."""
 
+    def __init__(self, mensaje: str, codigo: int | None = None) -> None:
+        super().__init__(mensaje)
+        # El status HTTP, cuando lo sabemos (ver _api()) — None para los
+        # errores que no vienen de un HTTPError (JSON inválido, etc.). Lo
+        # usa web/webhook.py para distinguir "ya no existe" (404/410, un
+        # link de aprobar/rechazar que ya se procesó antes) de un error de
+        # verdad, sin tener que parsear el mensaje.
+        self.codigo = codigo
+
 
 class Calendario:
     """Un calendario de Google, autenticado como cuenta de servicio."""
@@ -220,6 +229,23 @@ class Calendario:
             {"extendedProperties": {"private": {"recordatorio_enviado": "true"}}},
         )
 
+    def obtener_evento(self, evento_id: str) -> dict:
+        """El evento tal cual está en Calendar ahora mismo, por su id.
+
+        La usa /reservas/{accion} (web/webhook.py) para chequear ANTES de
+        aprobar/rechazar si esa reserva ya se resolvió, y no repetir el
+        WhatsApp ni el pedido a Calendar. Hace falta este chequeo porque el
+        link es un GET que ejecuta la acción — algunas apps (nos pasó con
+        Chatwoot en iPhone) precargan un link para armar una vista previa
+        antes de que la persona le dé clic, así que ese GET puede llegar
+        solo, sin que nadie lo haya tocado todavía.
+        """
+        return self._api(
+            "GET",
+            f"calendars/{urllib.parse.quote(self.calendario_id, safe='')}"
+            f"/events/{urllib.parse.quote(evento_id, safe='')}",
+        )
+
     def aprobar_evento(self, evento_id: str) -> dict:
         """Pasa un turno "tentative" a "confirmed": la aprobación del negocio."""
         return self._api(
@@ -276,7 +302,8 @@ class Calendario:
         except urllib.error.HTTPError as e:
             detalle = e.read().decode("utf-8", "replace")[:300]
             raise ErrorDeCalendario(
-                f"Google no autenticó la cuenta de servicio: {detalle}"
+                f"Google no autenticó la cuenta de servicio: {detalle}",
+                codigo=e.code,
             ) from None
 
         self._token = datos["access_token"]
@@ -310,7 +337,8 @@ class Calendario:
         except urllib.error.HTTPError as e:
             detalle = e.read().decode("utf-8", "replace")[:300]
             raise ErrorDeCalendario(
-                f"Google Calendar devolvió {e.code} en {metodo} {camino}: {detalle}"
+                f"Google Calendar devolvió {e.code} en {metodo} {camino}: {detalle}",
+                codigo=e.code,
             ) from None
 
         return json.loads(cuerpo_resp) if cuerpo_resp else {}

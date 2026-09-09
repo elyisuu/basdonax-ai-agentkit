@@ -14,23 +14,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agente import aprobacion  # noqa: E402
+from agente.calendario import ErrorDeCalendario  # noqa: E402
 
 from test_agente import agente_falso  # noqa: E402
 from test_chatwoot import ChatwootFalso, cliente  # noqa: E402
 
 
 class _CalendarioDeMentira:
-    """Alcanza con estos dos métodos: son los únicos que usa la ruta."""
+    """Alcanza con estos métodos: son los únicos que usa la ruta.
+
+    `eventos` empieza con todo en "tentative" (el estado normal de una
+    reserva a la espera de aprobación) para que los tests que no les
+    importa este detalle no tengan que armarlo a mano.
+    """
 
     def __init__(self) -> None:
         self.aprobados: list[str] = []
         self.cancelados: list[str] = []
+        self.eventos: dict[str, dict] = {}
+
+    def obtener_evento(self, evento_id):
+        if evento_id not in self.eventos:
+            self.eventos[evento_id] = {"status": "tentative"}
+        if self.eventos[evento_id] is None:
+            # Simula el 404/410 de Calendar para un evento ya borrado.
+            raise ErrorDeCalendario("no existe", codigo=404)
+        return self.eventos[evento_id]
 
     def aprobar_evento(self, evento_id):
         self.aprobados.append(evento_id)
+        self.eventos[evento_id] = {"status": "confirmed"}
 
     def cancelar_evento(self, evento_id):
         self.cancelados.append(evento_id)
+        self.eventos[evento_id] = None
 
 
 def _armar(secreto="shhh"):
@@ -101,6 +118,55 @@ def test_token_de_otra_reserva_no_sirve():
 
     assert respuesta.status_code == 403
     assert calendario.aprobados == []
+
+
+def test_aprobar_dos_veces_no_repite_el_whatsapp():
+    """Reproducido en producción: Chatwoot en iPhone precarga el link para
+    armar una vista previa (un GET sin que la persona lo haya tocado) y
+    aprueba solo; el clic real de la persona era el segundo GET, sobre un
+    evento que ya no estaba "tentative"."""
+    web, canal, calendario = _armar()
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+
+    with web as w:
+        primera = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+        segunda = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+
+    assert primera.status_code == 200
+    assert segunda.status_code == 200
+    assert "ya estaba aprobada" in segunda.text.lower()
+    assert calendario.aprobados == ["evento-1"], "no se vuelve a aprobar"
+    assert len(canal.envios()) == 1, "no se manda el WhatsApp dos veces"
+
+
+def test_rechazar_dos_veces_no_repite_el_whatsapp():
+    web, canal, calendario = _armar()
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+
+    with web as w:
+        primera = w.get(f"/reservas/rechazar/42/evento-1?token={token}")
+        segunda = w.get(f"/reservas/rechazar/42/evento-1?token={token}")
+
+    assert primera.status_code == 200
+    assert segunda.status_code == 200
+    assert "ya había sido rechazada" in segunda.text.lower()
+    assert calendario.cancelados == ["evento-1"]
+    assert len(canal.envios()) == 1
+
+
+def test_aprobar_algo_ya_rechazado_no_lo_revive():
+    web, canal, calendario = _armar()
+    token_rechazar = aprobacion.firmar("shhh", "42", "evento-1")
+    token_aprobar = aprobacion.firmar("shhh", "42", "evento-1")
+
+    with web as w:
+        w.get(f"/reservas/rechazar/42/evento-1?token={token_rechazar}")
+        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token_aprobar}")
+
+    assert respuesta.status_code == 200
+    assert "ya no existe" in respuesta.text.lower()
+    assert calendario.aprobados == []
+    assert len(canal.envios()) == 1, "solo el aviso del rechazo"
 
 
 def test_accion_desconocida_da_404():
