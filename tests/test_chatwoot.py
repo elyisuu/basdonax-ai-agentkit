@@ -22,8 +22,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from agente.canales import chatwoot as chatwoot_modulo  # noqa: E402
 from agente.canales.buffer import BufferDeMensajes  # noqa: E402
 from agente.canales.chatwoot import Chatwoot, ErrorDeChatwoot, _tipo_de_mensaje  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _sin_pausas_reales(monkeypatch):
+    """enviar() espera de verdad (time.sleep) entre globo y globo — acá se
+    saltea para no frenar la suite en cada test que manda más de uno."""
+    monkeypatch.setattr(chatwoot_modulo.time, "sleep", lambda segundos: None)
 
 
 def evento(
@@ -342,6 +350,40 @@ def test_no_manda_mensajes_vacios():
     canal.enviar("12", ["hola", "   ", ""])
 
     assert canal.envios() == ["hola"]
+
+
+def test_pausa_entre_globos_pero_no_antes_ni_despues(monkeypatch):
+    """Sin esto WhatsApp puede entregar los globos desordenados — pasó de
+    verdad (ver AGENTS.md). La pausa va SOLO entre mensajes."""
+    canal = ChatwootFalso()
+    pausas = []
+    monkeypatch.setattr(chatwoot_modulo.time, "sleep", lambda segundos: pausas.append(segundos))
+
+    canal.enviar("12", ["primero", "segundo", "tercero"])
+
+    assert pausas == [chatwoot_modulo.PAUSA_ENTRE_GLOBOS, chatwoot_modulo.PAUSA_ENTRE_GLOBOS]
+
+
+def test_un_solo_mensaje_no_espera_nada(monkeypatch):
+    canal = ChatwootFalso()
+    pausas = []
+    monkeypatch.setattr(chatwoot_modulo.time, "sleep", lambda segundos: pausas.append(segundos))
+
+    canal.enviar("12", ["el único"])
+
+    assert pausas == []
+
+
+def test_los_mensajes_vacios_no_cuentan_para_la_pausa(monkeypatch):
+    """Dos mensajes con contenido real y uno vacío en el medio: sigue
+    siendo una sola pausa, no dos — el vacío ni se manda."""
+    canal = ChatwootFalso()
+    pausas = []
+    monkeypatch.setattr(chatwoot_modulo.time, "sleep", lambda segundos: pausas.append(segundos))
+
+    canal.enviar("12", ["primero", "   ", "segundo"])
+
+    assert pausas == [chatwoot_modulo.PAUSA_ENTRE_GLOBOS]
 
 
 def test_la_barra_final_de_la_url_no_se_duplica():

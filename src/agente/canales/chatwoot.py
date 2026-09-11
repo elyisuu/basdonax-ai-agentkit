@@ -30,6 +30,7 @@ La API de Chatwoot son pedidos HTTP con JSON: no hace falta más.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from collections import deque
@@ -40,6 +41,14 @@ from .base import Canal, MensajeEntrante
 # Cuánto esperamos a que Chatwoot conteste. Corre en el mismo servidor que
 # el agente, así que si tarda más que esto es porque algo anda mal.
 ESPERA_DE_RED = 20
+
+# Pausa entre un globo y el siguiente cuando enviar() manda más de un
+# mensaje seguido. Sin esto, WhatsApp puede entregarlos desordenados al
+# teléfono: cada globo es un pedido aparte a la API de Meta, y si dos salen
+# pegados en el mismo segundo no hay ninguna garantía de en qué orden
+# llegan — pasó de verdad (ver AGENTS.md). No hace falta tanto como el
+# timeout de red de arriba: alcanza con separarlos.
+PAUSA_ENTRE_GLOBOS = 0.8
 
 # Lo que contestamos cuando llega un audio, una foto o cualquier adjunto sin
 # texto: el modelo todavía no puede leer eso, y quedarse callado se siente
@@ -201,10 +210,19 @@ class Chatwoot(Canal):
         Salen como `outgoing`, que es lo que Chatwoot entiende por "esto lo
         dice nuestro lado". Desde ahí Chatwoot lo empuja al canal que
         corresponda: WhatsApp, Instagram, el widget de la web.
+
+        Entre un globo y el siguiente espera PAUSA_ENTRE_GLOBOS — ver el
+        comentario ahí. Solo pausa ENTRE mensajes, nunca antes del primero
+        ni después del último.
         """
+        primero = True
         for texto in mensajes:
             if not texto.strip():
                 continue
+
+            if not primero:
+                time.sleep(PAUSA_ENTRE_GLOBOS)
+            primero = False
 
             self._api(
                 "POST",
