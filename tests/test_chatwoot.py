@@ -23,7 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agente.canales.buffer import BufferDeMensajes  # noqa: E402
-from agente.canales.chatwoot import Chatwoot, _tipo_de_mensaje  # noqa: E402
+from agente.canales.chatwoot import Chatwoot, ErrorDeChatwoot, _tipo_de_mensaje  # noqa: E402
 
 
 def evento(
@@ -63,7 +63,7 @@ def evento(
 class ChatwootFalso(Chatwoot):
     """El canal, pero con la API de mentira. Anota todo lo que se mandó."""
 
-    def __init__(self, etiqueta_humano="humano", etiquetas_remotas=None):
+    def __init__(self, etiqueta_humano="humano", etiquetas_remotas=None, contacto_id=None):
         super().__init__(
             url="https://chatwoot.ejemplo.com/",
             token="token-falso",
@@ -72,12 +72,17 @@ class ChatwootFalso(Chatwoot):
         )
         self.llamadas: list[dict] = []
         self._etiquetas_remotas = etiquetas_remotas or []
+        self._contacto_id = contacto_id
 
     def _api(self, metodo, camino, datos=None):
         self.llamadas.append({"metodo": metodo, "camino": camino, "datos": datos})
 
         if camino.endswith("/labels"):
             return {"payload": self._etiquetas_remotas}
+        if metodo == "GET" and camino.startswith("conversations/"):
+            if self._contacto_id is None:
+                return {}
+            return {"meta": {"sender": {"id": self._contacto_id}}}
         return {"id": 99}
 
     def envios(self) -> list[str]:
@@ -262,6 +267,51 @@ def test_etiquetar_no_le_importan_las_mayusculas():
         l for l in canal.llamadas if l["camino"].endswith("/labels") and l["metodo"] == "POST"
     ][0]
     assert sorted(pedido["datos"]["labels"]) == ["reserva-nueva", "vip"]
+
+
+# -- La ficha del contacto -----------------------------------------------------
+
+
+def test_contacto_de_lee_el_sender_de_la_conversacion():
+    canal = ChatwootFalso(contacto_id=42)
+
+    assert canal.contacto_de("12") == "42"
+
+
+def test_contacto_de_none_si_no_hay_sender():
+    canal = ChatwootFalso()  # sin contacto_id: la API de mentira no trae "meta"
+
+    assert canal.contacto_de("12") is None
+
+
+def test_contacto_de_none_si_la_api_revienta():
+    class ChatwootQueRevienta(ChatwootFalso):
+        def _api(self, metodo, camino, datos=None):
+            raise ErrorDeChatwoot("Chatwoot no contesta")
+
+    assert ChatwootQueRevienta().contacto_de("12") is None
+
+
+def test_actualizar_nombre_contacto():
+    canal = ChatwootFalso()
+
+    canal.actualizar_nombre_contacto("42", "Jesús")
+
+    pedido = canal.llamadas[-1]
+    assert pedido == {"metodo": "PATCH", "camino": "contacts/42", "datos": {"name": "Jesús"}}
+
+
+def test_agregar_nota_contacto():
+    canal = ChatwootFalso()
+
+    canal.agregar_nota_contacto("42", "Prefiere que le escriban en portugués")
+
+    pedido = canal.llamadas[-1]
+    assert pedido == {
+        "metodo": "POST",
+        "camino": "contacts/42/notes",
+        "datos": {"content": "Prefiere que le escriban en portugués"},
+    }
 
 
 # -- Lo que sale --------------------------------------------------------------

@@ -658,9 +658,15 @@ a la vez, cada uno con dueño distinto:
   usan `recordatorios.py` y `cancelar_mi_reserva`/`reprogramar_mi_reserva`
   para saber de quién es el turno. Vive en la cuenta de Google del negocio,
   no en la tuya — quien tenga acceso a ese calendario lo ve.
-- **Chatwoot** — `Chatwoot.anotar()` deja una nota privada en la
-  conversación, visible para cualquiera del equipo del negocio con acceso a
-  esa bandeja. No le llega al paciente (es nota, no mensaje).
+- **Chatwoot (conversación)** — `Chatwoot.anotar()` deja una nota privada en
+  la conversación, visible para cualquiera del equipo del negocio con acceso
+  a esa bandeja. No le llega al paciente (es nota, no mensaje).
+- **Chatwoot (contacto)** — `actualizar_ficha_cliente` (`herramientas.py`)
+  guarda el nombre en el contacto nativo de Chatwoot y datos sueltos como
+  notas de ESE contacto (`Chatwoot.actualizar_nombre_contacto()` /
+  `agregar_nota_contacto()`) — a diferencia de `Chatwoot.anotar()`, esto
+  queda pegado a la persona y sobrevive aunque la próxima charla sea otro
+  hilo de conversación.
 - **Postgres (`MODO=produccion`)** — el checkpointer de LangGraph guarda la
   conversación **entera**, cada mensaje, **para siempre**. No hay ningún
   borrado automático hoy: `MEMORIA_MENSAJES` solo recorta cuánto le mandás
@@ -686,6 +692,15 @@ borrado. Si el negocio necesita algo más estricto (borrar a pedido, no
 guardar cierto tipo de dato), es una conversación de producto antes que de
 código — este bloque existe para tenerla con datos concretos en la mano,
 no de memoria.
+
+**Política acordada (11 sep 2026): retener 2 años por default.** Es una
+decisión de producto, no una garantía legal (no es asesoría — varía según
+el país; acá aplica GDPR por ser un negocio en la UE) — **todavía no hay
+ningún script que la haga cumplir**. Falta el mismo tipo de programa que
+`recordatorios.py`: corre solo, borra lo que tenga más de 2 años en
+Postgres (conversaciones) y en las notas de contacto de Chatwoot, no toca
+nada si no hay nada vencido. Hasta que exista, esto es una política
+escrita, no una que el sistema cumpla sola.
 
 
 ## Hacia dónde va (para no diseñar en contra)

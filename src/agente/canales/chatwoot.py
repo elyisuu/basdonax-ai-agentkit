@@ -241,6 +241,36 @@ class Chatwoot(Canal):
             {"labels": sorted(actuales)},
         )
 
+    def contacto_de(self, conversacion: str) -> str | None:
+        """El id del contacto dueño de esta conversación, o None si no se
+        pudo averiguar (conversación inexistente, Chatwoot no contesta).
+
+        Lo pregunta la API porque acá no llega el evento crudo del webhook
+        — a esta altura (una herramienta del agente) solo hay un `Chatwoot`
+        armado desde el `.env` y el id de conversación, mismo criterio que
+        `_etiquetas_de()`.
+        """
+        try:
+            respuesta = self._api("GET", f"conversations/{conversacion}")
+        except Exception:
+            return None
+
+        contacto = ((respuesta.get("meta") or {}).get("sender") or {})
+        id_contacto = contacto.get("id")
+        return str(id_contacto) if id_contacto else None
+
+    def actualizar_nombre_contacto(self, contacto_id: str, nombre: str) -> None:
+        """Le pone/cambia el nombre a un contacto — el que se ve arriba de
+        la conversación en la bandeja, no una nota aparte."""
+        self._api("PATCH", f"contacts/{contacto_id}", {"name": nombre})
+
+    def agregar_nota_contacto(self, contacto_id: str, texto: str) -> None:
+        """Deja una nota en el perfil del CONTACTO (pestaña "Notes"), no en
+        la conversación — a diferencia de `anotar()`, esto queda pegado a la
+        persona y no a un hilo puntual: sirve para la próxima vez que
+        escriba, así haya sido por una conversación distinta."""
+        self._api("POST", f"contacts/{contacto_id}/notes", {"content": texto})
+
     def escribiendo(self, conversacion: str, encendido: bool = True) -> None:
         """El "escribiendo..." mientras el modelo piensa.
 

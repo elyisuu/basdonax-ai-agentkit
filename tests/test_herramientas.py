@@ -22,6 +22,7 @@ from agente.calendario import ErrorDeCalendario  # noqa: E402
 from agente.canales.chatwoot import ErrorDeChatwoot  # noqa: E402
 from agente.herramientas import (  # noqa: E402
     HERRAMIENTAS,
+    actualizar_ficha_cliente,
     anotar_lista_espera,
     anotar_reserva,
     cancelar_mi_reserva,
@@ -151,15 +152,27 @@ def test_el_modelo_recibe_una_descripcion_util():
 
 
 class _ChatwootDeMentira:
-    def __init__(self) -> None:
+    def __init__(self, contacto_id="7") -> None:
         self.notas: list[tuple[str, str]] = []
         self.etiquetas: list[tuple[str, str]] = []
+        self._contacto_id = contacto_id
+        self.nombres_puestos: list[tuple[str, str]] = []
+        self.notas_de_contacto: list[tuple[str, str]] = []
 
     def anotar(self, conversacion, texto):
         self.notas.append((conversacion, texto))
 
     def etiquetar(self, conversacion, etiqueta):
         self.etiquetas.append((conversacion, etiqueta))
+
+    def contacto_de(self, conversacion):
+        return self._contacto_id
+
+    def actualizar_nombre_contacto(self, contacto_id, nombre):
+        self.nombres_puestos.append((contacto_id, nombre))
+
+    def agregar_nota_contacto(self, contacto_id, texto):
+        self.notas_de_contacto.append((contacto_id, texto))
 
 
 class _CalendarioDeMentira:
@@ -1169,6 +1182,82 @@ def test_derivar_a_persona_si_chatwoot_falla_avisa_el_error(monkeypatch):
 
 def test_derivar_a_persona_esta_en_la_lista_de_herramientas():
     assert derivar_a_persona in HERRAMIENTAS
+
+
+# -- actualizar_ficha_cliente ---------------------------------------------------------
+
+
+def test_actualizar_ficha_sin_nada_nuevo_no_llama_a_chatwoot(monkeypatch):
+    llamado = []
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: llamado.append(1))
+
+    resultado = actualizar_ficha_cliente.invoke({"nombre": "", "nota": ""}, config=_config())
+
+    assert "nada nuevo" in resultado.lower()
+    assert llamado == []  # ni siquiera pidió el cliente de Chatwoot
+
+
+def test_actualizar_ficha_sin_chatwoot(monkeypatch):
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = actualizar_ficha_cliente.invoke(
+        {"nombre": "Jesús", "nota": ""}, config=_config()
+    )
+
+    assert "chatwoot" in resultado.lower()
+
+
+def test_actualizar_ficha_pone_el_nombre_y_la_nota(monkeypatch):
+    chatwoot = _ChatwootDeMentira(contacto_id="7")
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = actualizar_ficha_cliente.invoke(
+        {"nombre": "Jesús", "nota": "prefiere portugués"}, config=_config()
+    )
+
+    assert "guardado" in resultado.lower()
+    assert chatwoot.nombres_puestos == [("7", "Jesús")]
+    assert chatwoot.notas_de_contacto == [("7", "prefiere portugués")]
+
+
+def test_actualizar_ficha_solo_nombre_no_agrega_nota_vacia(monkeypatch):
+    chatwoot = _ChatwootDeMentira(contacto_id="7")
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    actualizar_ficha_cliente.invoke({"nombre": "Jesús", "nota": ""}, config=_config())
+
+    assert chatwoot.nombres_puestos == [("7", "Jesús")]
+    assert chatwoot.notas_de_contacto == []
+
+
+def test_actualizar_ficha_sin_encontrar_el_contacto(monkeypatch):
+    chatwoot = _ChatwootDeMentira(contacto_id=None)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = actualizar_ficha_cliente.invoke(
+        {"nombre": "Jesús", "nota": ""}, config=_config()
+    )
+
+    assert "no encontré" in resultado.lower()
+    assert chatwoot.nombres_puestos == []
+
+
+def test_actualizar_ficha_si_chatwoot_falla_avisa_el_error(monkeypatch):
+    class _Explota(_ChatwootDeMentira):
+        def actualizar_nombre_contacto(self, contacto_id, nombre):
+            raise RuntimeError("Chatwoot no contestó")
+
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: _Explota())
+
+    resultado = actualizar_ficha_cliente.invoke(
+        {"nombre": "Jesús", "nota": ""}, config=_config()
+    )
+
+    assert "no se pudo guardar" in resultado.lower()
+
+
+def test_actualizar_ficha_esta_en_la_lista_de_herramientas():
+    assert actualizar_ficha_cliente in HERRAMIENTAS
 
 
 # -- franjas_ocupadas -------------------------------------------------------------

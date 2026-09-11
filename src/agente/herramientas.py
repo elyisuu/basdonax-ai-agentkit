@@ -45,6 +45,13 @@ Son siete:
                                 Chatwoot._la_atiende_una_persona()) y, si
                                 está configurado, avisa por Telegram —
                                 mismo mecanismo que alertas.py.
+  · `actualizar_ficha_cliente` → guarda el nombre y datos sueltos de la
+                                persona en su CONTACTO de Chatwoot (no en la
+                                conversación): el nombre nativo del contacto
+                                y una nota nueva por cada dato que se
+                                aprende, para que quede aunque la próxima
+                                charla sea otro hilo. Necesita Chatwoot
+                                conectado.
 
 `clima` usa **Open-Meteo** (https://open-meteo.com), que es gratis, no pide
 registro y no usa clave de API. Eso es a propósito: este repo es para probar
@@ -665,6 +672,50 @@ def derivar_a_persona(motivo: str, config: RunnableConfig) -> str:
     )
 
 
+@tool
+def actualizar_ficha_cliente(nombre: str = "", nota: str = "", *, config: RunnableConfig) -> str:
+    """Guarda datos de la persona para que no haya que volver a preguntarlos
+    la próxima vez que escriba.
+
+    Usala cuando te diga su nombre y todavía no lo tenías, o cuando salga
+    algo puntual que valga la pena recordar de ELLA (no del motivo de la
+    consulta de hoy — eso va en el parámetro `aclaracion` de
+    `anotar_reserva`): una preferencia, un dato de contacto, algo que dijo
+    que conviene tener a mano la próxima vez. No hace falta llamarla en cada
+    mensaje — solo cuando hay algo nuevo para guardar.
+
+    Args:
+        nombre: El nombre de la persona, si lo mencionó recién. Dejalo
+            vacío si no dijo nada nuevo sobre esto.
+        nota: Un dato suelto para recordar de la próxima vez, en pocas
+            palabras. Dejalo vacío si no hay nada nuevo.
+    """
+    if not nombre and not nota:
+        return "No hay nada nuevo que guardar."
+
+    chatwoot = _chatwoot_del_config(config)
+    if chatwoot is None:
+        return "No puedo guardar esto: hace falta tener Chatwoot conectado."
+
+    conversacion = _conversacion_de(config)
+    if not conversacion:
+        return "No puedo guardar esto en este canal."
+
+    contacto_id = chatwoot.contacto_de(conversacion)
+    if not contacto_id:
+        return "No encontré la ficha de esta persona ahora mismo — probá de nuevo más tarde."
+
+    try:
+        if nombre:
+            chatwoot.actualizar_nombre_contacto(contacto_id, nombre)
+        if nota:
+            chatwoot.agregar_nota_contacto(contacto_id, nota)
+    except Exception as e:
+        return f"No se pudo guardar: {type(e).__name__}: {e}"
+
+    return "Listo, guardado en la ficha."
+
+
 # Lo que el agente tiene atado. Cuando agregues otra herramienta, sumala acá:
 # es la única lista que mira el grafo.
 HERRAMIENTAS = [
@@ -675,6 +726,7 @@ HERRAMIENTAS = [
     reprogramar_mi_reserva,
     anotar_lista_espera,
     derivar_a_persona,
+    actualizar_ficha_cliente,
 ]
 
 
