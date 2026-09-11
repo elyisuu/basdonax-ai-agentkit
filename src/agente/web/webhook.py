@@ -71,17 +71,60 @@ def _campo_de_descripcion(descripcion: str, etiqueta: str) -> str:
     return ""
 
 
+def _grafico_mensual(resumen: list[dict]) -> str:
+    """Un gráfico de barras apiladas (nuevos + recurrentes) por mes — puro
+    CSS, ninguna librería de gráficos: cada barra son dos `div` con la
+    altura calculada a mano en Python. Sirve para mostrar de un vistazo
+    lo que la tabla de abajo obliga a leer con calma (útil al presentarle
+    esto a un cliente).
+
+    De más viejo a más nuevo (izquierda a derecha, como se lee un
+    calendario) — `resumen_mensual()` viene al revés (más nuevo primero),
+    por eso se da vuelta acá nomás, sin tocar esa consulta. Los últimos 12
+    meses, para que la barra no quede angosta si ya hay años de datos.
+    """
+    if not resumen:
+        return ""
+
+    meses = list(reversed(resumen))[-12:]
+    tope = max(f["turnos"] for f in meses) or 1
+    alto_px = 120
+
+    barras = "".join(
+        f'<div class="barra-mes">'
+        f'<span class="barra-total">{f["turnos"]}</span>'
+        f'<div class="barra" style="height:{alto_px}px">'
+        f'<div class="segmento recurrentes" style="height:{round(f["recurrentes"] / tope * alto_px)}px"></div>'
+        f'<div class="segmento nuevos" style="height:{round(f["nuevos"] / tope * alto_px)}px"></div>'
+        f"</div>"
+        # "2026-09" -> "09/26": compacto para que quepan doce en fila.
+        f'<span class="barra-mes-label">{escape(f["mes"][5:7])}/{escape(f["mes"][2:4])}</span>'
+        f"</div>"
+        for f in meses
+    )
+
+    return f"""
+  <div class="grafico">{barras}</div>
+  <div class="leyenda">
+    <span><i class="punto nuevos"></i> Nuevos</span>
+    <span><i class="punto recurrentes"></i> Recurrentes</span>
+  </div>
+"""
+
+
 def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
     """Arma el HTML de /estadisticas a mano — sin motor de plantillas ni
     JavaScript, mismo criterio liviano que el resto del repo (ver
     AGENTS.md: "web/app.py: un solo HTML, sin build ni npm").
 
-    Tres bloques: tarjetas con el mes más reciente y el total histórico
+    Cuatro bloques: tarjetas con el mes más reciente y el total histórico
     (para que el número grande se vea de una, sin tener que sumar la
-    tabla a mano), el resumen mes a mes, y el detalle turno por turno.
+    tabla a mano), el gráfico de la tendencia, el resumen mes a mes, y el
+    detalle turno por turno.
     """
     ultimo = resumen[0] if resumen else {"turnos": 0, "nuevos": 0, "recurrentes": 0}
     total_historico = sum(f["turnos"] for f in resumen)
+    grafico_html = _grafico_mensual(resumen)
 
     if not resumen:
         resumen_filas = (
@@ -118,31 +161,49 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Estadísticas</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <style>
   :root {{
     --tinta: #1c2530; --tinta-suave: #5b6672; --borde: #e3e7ec;
     --fondo: #f7f8fa; --superficie: #ffffff;
     --acento: #2f6f4f; --acento-suave: #e6f2ec;
-    --recurrente: #eef1f5; --recurrente-texto: #465063;
+    --recurrente: #b7c0cc; --recurrente-texto: #465063;
   }}
   * {{ box-sizing: border-box; }}
   body {{
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: "Inter", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: var(--fondo); color: var(--tinta);
     margin: 0; padding: 40px 20px 80px;
   }}
   .contenedor {{ max-width: 880px; margin: 0 auto; }}
-  h1 {{ font-size: 1.5rem; margin: 0 0 4px; }}
+  h1 {{ font-size: 1.6rem; font-weight: 700; margin: 0 0 4px; letter-spacing: -.01em; }}
   .subtitulo {{ color: var(--tinta-suave); margin: 0 0 32px; font-size: .95rem; }}
   .tarjetas {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 40px; }}
   .tarjeta {{
     background: var(--superficie); border: 1px solid var(--borde); border-radius: 12px;
     padding: 18px 22px; flex: 1; min-width: 140px;
   }}
-  .tarjeta .numero {{ display: block; font-size: 1.9rem; font-weight: 600; line-height: 1.2; }}
+  .tarjeta .numero {{ display: block; font-size: 1.9rem; font-weight: 700; line-height: 1.2; }}
   .tarjeta .etiqueta {{ display: block; color: var(--tinta-suave); font-size: .8rem; margin-top: 2px; }}
-  h2 {{ font-size: 1.05rem; margin: 40px 0 4px; }}
+  h2 {{ font-size: 1.05rem; font-weight: 600; margin: 40px 0 4px; }}
   .ayuda {{ color: var(--tinta-suave); font-size: .85rem; margin: 0 0 12px; }}
+
+  .grafico {{
+    display: flex; align-items: flex-end; justify-content: center; gap: 18px; height: 150px;
+    background: var(--superficie); border: 1px solid var(--borde); border-radius: 12px;
+    padding: 20px 16px 12px; overflow-x: auto;
+  }}
+  .barra-mes {{ display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 28px; }}
+  .barra-total {{ font-size: .72rem; font-weight: 600; color: var(--tinta-suave); }}
+  .barra {{ width: 100%; max-width: 26px; display: flex; flex-direction: column-reverse; border-radius: 4px; overflow: hidden; background: var(--borde); }}
+  .segmento.nuevos {{ background: var(--acento); }}
+  .segmento.recurrentes {{ background: var(--recurrente); }}
+  .barra-mes-label {{ font-size: .68rem; color: var(--tinta-suave); white-space: nowrap; }}
+  .leyenda {{ display: flex; gap: 20px; margin: 10px 0 0; font-size: .8rem; color: var(--tinta-suave); }}
+  .leyenda .punto {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }}
+  .leyenda .punto.nuevos {{ background: var(--acento); }}
+  .leyenda .punto.recurrentes {{ background: var(--recurrente); }}
+
   .tabla-scroll {{ overflow-x: auto; border: 1px solid var(--borde); border-radius: 10px; }}
   table {{ width: 100%; border-collapse: collapse; background: var(--superficie); min-width: 480px; }}
   th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--borde); font-size: .92rem; white-space: nowrap; }}
@@ -151,7 +212,7 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
   td.vacio {{ color: var(--tinta-suave); text-align: center; padding: 24px; white-space: normal; }}
   .chip {{ display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600; }}
   .chip.nueva {{ background: var(--acento-suave); color: var(--acento); }}
-  .chip.recurrente {{ background: var(--recurrente); color: var(--recurrente-texto); }}
+  .chip.recurrente {{ background: #eef1f5; color: var(--recurrente-texto); }}
 </style>
 </head>
 <body>
@@ -165,7 +226,7 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
     <div class="tarjeta"><span class="numero">{ultimo['recurrentes']}</span><span class="etiqueta">Recurrentes</span></div>
     <div class="tarjeta"><span class="numero">{total_historico}</span><span class="etiqueta">Total histórico</span></div>
   </div>
-
+{grafico_html}
   <h2>Turnos por mes</h2>
   <div class="tabla-scroll"><table>
     <thead><tr><th>Mes</th><th>Turnos</th><th>Nuevos</th><th>Recurrentes</th></tr></thead>

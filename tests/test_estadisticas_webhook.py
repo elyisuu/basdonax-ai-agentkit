@@ -201,3 +201,35 @@ def test_un_motivo_con_html_no_se_ejecuta(monkeypatch):
 
     assert "<img src=x onerror=alert(1)>" not in respuesta.text
     assert "&lt;img" in respuesta.text
+
+
+def test_el_grafico_aparece_con_datos(monkeypatch):
+    web, _ = _armar()
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "resumen_mensual",
+        lambda dsn: [
+            {"mes": "2026-09", "turnos": 14, "nuevos": 6, "recurrentes": 8},
+            {"mes": "2026-08", "turnos": 9, "nuevos": 4, "recurrentes": 5},
+        ],
+    )
+    _sin_detalle(monkeypatch)
+
+    with web as w:
+        respuesta = w.get("/estadisticas?token=shhh-stats")
+
+    assert 'class="grafico"' in respuesta.text
+    assert "09/26" in respuesta.text  # la etiqueta del mes más reciente
+    assert "08/26" in respuesta.text
+
+
+def test_sin_datos_no_hay_grafico(monkeypatch):
+    """Sin turnos no hay nada que graficar — ni una barra vacía rara."""
+    web, _ = _armar()
+    monkeypatch.setattr(webhook_modulo.visitas, "resumen_mensual", lambda dsn: [])
+    _sin_detalle(monkeypatch)
+
+    with web as w:
+        respuesta = w.get("/estadisticas?token=shhh-stats")
+
+    assert 'class="grafico"' not in respuesta.text
