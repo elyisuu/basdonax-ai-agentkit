@@ -60,6 +60,129 @@ MENSAJE_ERROR_GENERICO = (
 )
 
 
+def _campo_de_descripcion(descripcion: str, etiqueta: str) -> str:
+    """Un campo tipo "Etiqueta: valor" de la descripción de un evento de
+    Calendar (ver anotar_reserva, herramientas.py, que arma esas líneas).
+    "" si no está — Teléfono y Aclaración son opcionales ahí."""
+    prefijo = f"{etiqueta}: "
+    for linea in descripcion.splitlines():
+        if linea.startswith(prefijo):
+            return linea[len(prefijo):].strip()
+    return ""
+
+
+def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
+    """Arma el HTML de /estadisticas a mano — sin motor de plantillas ni
+    JavaScript, mismo criterio liviano que el resto del repo (ver
+    AGENTS.md: "web/app.py: un solo HTML, sin build ni npm").
+
+    Tres bloques: tarjetas con el mes más reciente y el total histórico
+    (para que el número grande se vea de una, sin tener que sumar la
+    tabla a mano), el resumen mes a mes, y el detalle turno por turno.
+    """
+    ultimo = resumen[0] if resumen else {"turnos": 0, "nuevos": 0, "recurrentes": 0}
+    total_historico = sum(f["turnos"] for f in resumen)
+
+    if not resumen:
+        resumen_filas = (
+            '<tr><td colspan="4" class="vacio">Todavía no hay turnos registrados.</td></tr>'
+        )
+    else:
+        resumen_filas = "".join(
+            f"<tr><td>{escape(f['mes'])}</td><td>{f['turnos']}</td>"
+            f"<td>{f['nuevos']}</td><td>{f['recurrentes']}</td></tr>"
+            for f in resumen
+        )
+
+    if not detalle:
+        detalle_filas = (
+            '<tr><td colspan="6" class="vacio">Todavía no hay turnos registrados.</td></tr>'
+        )
+    else:
+        # Nombre/teléfono/motivo son texto que la persona escribió por
+        # WhatsApp — nunca confiar en que venga "limpio". escape() antes
+        # de meterlo en el HTML (ver AGENTS.md).
+        detalle_filas = "".join(
+            f"<tr><td>{escape(v['nombre']) or '—'}</td>"
+            f"<td>{escape(v['telefono']) or '—'}</td>"
+            f"<td>{escape(v['motivo']) or '—'}</td>"
+            f"<td>{escape(v['fecha'])}</td><td>{escape(v['hora'])}</td>"
+            f"<td><span class=\"chip {'nueva' if v['es_nueva'] else 'recurrente'}\">"
+            f"{'Nueva' if v['es_nueva'] else 'Recurrente'}</span></td></tr>"
+            for v in detalle
+        )
+
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estadísticas</title>
+<style>
+  :root {{
+    --tinta: #1c2530; --tinta-suave: #5b6672; --borde: #e3e7ec;
+    --fondo: #f7f8fa; --superficie: #ffffff;
+    --acento: #2f6f4f; --acento-suave: #e6f2ec;
+    --recurrente: #eef1f5; --recurrente-texto: #465063;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--fondo); color: var(--tinta);
+    margin: 0; padding: 40px 20px 80px;
+  }}
+  .contenedor {{ max-width: 880px; margin: 0 auto; }}
+  h1 {{ font-size: 1.5rem; margin: 0 0 4px; }}
+  .subtitulo {{ color: var(--tinta-suave); margin: 0 0 32px; font-size: .95rem; }}
+  .tarjetas {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 40px; }}
+  .tarjeta {{
+    background: var(--superficie); border: 1px solid var(--borde); border-radius: 12px;
+    padding: 18px 22px; flex: 1; min-width: 140px;
+  }}
+  .tarjeta .numero {{ display: block; font-size: 1.9rem; font-weight: 600; line-height: 1.2; }}
+  .tarjeta .etiqueta {{ display: block; color: var(--tinta-suave); font-size: .8rem; margin-top: 2px; }}
+  h2 {{ font-size: 1.05rem; margin: 40px 0 4px; }}
+  .ayuda {{ color: var(--tinta-suave); font-size: .85rem; margin: 0 0 12px; }}
+  .tabla-scroll {{ overflow-x: auto; border: 1px solid var(--borde); border-radius: 10px; }}
+  table {{ width: 100%; border-collapse: collapse; background: var(--superficie); min-width: 480px; }}
+  th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--borde); font-size: .92rem; white-space: nowrap; }}
+  th {{ color: var(--tinta-suave); font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; background: var(--fondo); }}
+  tr:last-child td {{ border-bottom: none; }}
+  td.vacio {{ color: var(--tinta-suave); text-align: center; padding: 24px; white-space: normal; }}
+  .chip {{ display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600; }}
+  .chip.nueva {{ background: var(--acento-suave); color: var(--acento); }}
+  .chip.recurrente {{ background: var(--recurrente); color: var(--recurrente-texto); }}
+</style>
+</head>
+<body>
+<div class="contenedor">
+  <h1>Estadísticas</h1>
+  <p class="subtitulo">Turnos confirmados: cuántos, quiénes, y si vuelven.</p>
+
+  <div class="tarjetas">
+    <div class="tarjeta"><span class="numero">{ultimo['turnos']}</span><span class="etiqueta">Turnos este mes</span></div>
+    <div class="tarjeta"><span class="numero">{ultimo['nuevos']}</span><span class="etiqueta">Nuevos</span></div>
+    <div class="tarjeta"><span class="numero">{ultimo['recurrentes']}</span><span class="etiqueta">Recurrentes</span></div>
+    <div class="tarjeta"><span class="numero">{total_historico}</span><span class="etiqueta">Total histórico</span></div>
+  </div>
+
+  <h2>Turnos por mes</h2>
+  <div class="tabla-scroll"><table>
+    <thead><tr><th>Mes</th><th>Turnos</th><th>Nuevos</th><th>Recurrentes</th></tr></thead>
+    <tbody>{resumen_filas}</tbody>
+  </table></div>
+
+  <h2>Detalle</h2>
+  <p class="ayuda">Últimos {len(detalle)} turnos, el más reciente primero.</p>
+  <div class="tabla-scroll"><table>
+    <thead><tr><th>Nombre</th><th>Teléfono</th><th>Motivo</th><th>Fecha</th><th>Hora</th><th></th></tr></thead>
+    <tbody>{detalle_filas}</tbody>
+  </table></div>
+</div>
+</body>
+</html>"""
+
+
 def _registrar_visita_aprobada(
     canal: Chatwoot, config: Config, conversacion: str, evento: dict
 ) -> None:
@@ -81,9 +204,18 @@ def _registrar_visita_aprobada(
         hora = resto[:5]  # "09:00:00+01:00" -> "09:00"
         # El título se arma en anotar_reserva() como "Nombre (Np)".
         nombre = evento.get("summary", "").rsplit(" (", 1)[0]
+        descripcion = evento.get("description", "")
+        telefono = _campo_de_descripcion(descripcion, "Teléfono")
+        motivo = _campo_de_descripcion(descripcion, "Aclaración")
 
         visitas.registrar_visita(
-            config.postgres_dsn, contacto_id, fecha, hora, nombre=nombre
+            config.postgres_dsn,
+            contacto_id,
+            fecha,
+            hora,
+            telefono=telefono,
+            nombre=nombre,
+            motivo=motivo,
         )
     except Exception as e:
         registro.warning("[%s] no se pudo registrar la visita: %s", conversacion, e)
@@ -391,49 +523,6 @@ def crear_app(
                 status_code=500,
             )
 
-        if not resumen:
-            resumen_html = '<tr><td colspan="4">Todavía no hay turnos registrados.</td></tr>'
-        else:
-            resumen_html = "".join(
-                f"<tr><td>{escape(f['mes'])}</td><td>{f['turnos']}</td>"
-                f"<td>{f['nuevos']}</td><td>{f['recurrentes']}</td></tr>"
-                for f in resumen
-            )
-
-        if not detalle:
-            detalle_html = '<tr><td colspan="5">Todavía no hay turnos registrados.</td></tr>'
-        else:
-            # Un nombre o teléfono es texto que dijo la persona por chat —
-            # nunca confiar en que venga "limpio". escape() antes de
-            # meterlo en el HTML, mismo motivo que cualquier otro dato de
-            # afuera.
-            detalle_html = "".join(
-                f"<tr><td>{escape(v['nombre']) or '—'}</td>"
-                f"<td>{escape(v['telefono']) or '—'}</td>"
-                f"<td>{escape(v['fecha'])}</td><td>{escape(v['hora'])}</td>"
-                f"<td>{'Nueva' if v['es_nueva'] else 'Recurrente'}</td></tr>"
-                for v in detalle
-            )
-
-        return HTMLResponse(
-            "<html><head><meta charset=\"utf-8\">"
-            "<title>Estadísticas</title>"
-            "<style>"
-            "body{font-family:sans-serif;max-width:760px;margin:40px auto;color:#222}"
-            "table{width:100%;border-collapse:collapse;margin-top:16px}"
-            "th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #ddd}"
-            "th{color:#666;font-size:.85em;text-transform:uppercase}"
-            "h2{margin-top:48px}"
-            "</style></head><body>"
-            "<h1>Estadísticas</h1>"
-            "<h2>Turnos por mes</h2>"
-            "<table><thead><tr><th>Mes</th><th>Turnos</th><th>Nuevos</th>"
-            f"<th>Recurrentes</th></tr></thead><tbody>{resumen_html}</tbody></table>"
-            "<h2>Detalle (últimos turnos)</h2>"
-            "<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Fecha</th>"
-            f"<th>Hora</th><th>Primera vez</th></tr></thead>"
-            f"<tbody>{detalle_html}</tbody></table>"
-            "</body></html>"
-        )
+        return HTMLResponse(_pagina_estadisticas(resumen, detalle))
 
     return app

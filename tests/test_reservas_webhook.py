@@ -93,6 +93,11 @@ def test_aprobar_registra_la_visita(monkeypatch):
     calendario.eventos["evento-1"] = {
         "status": "tentative",
         "summary": "Ana (1p)",
+        "description": (
+            "Nombre: Ana\nPersonas: 1\nFecha: 2026-09-14\nHora: 09:00\n"
+            "Teléfono: +351900000000\nAclaración: Dolor de espalda\n"
+            "Conversación: 42"
+        ),
         "start": {"dateTime": "2026-09-14T09:00:00+01:00"},
     }
     agente = agente_falso(["no debería usarse"])
@@ -114,6 +119,39 @@ def test_aprobar_registra_la_visita(monkeypatch):
     args, kwargs = llamadas[0]
     assert args[:4] == (agente.config.postgres_dsn, "99", "2026-09-14", "09:00")
     assert kwargs.get("nombre") == "Ana"
+    assert kwargs.get("telefono") == "+351900000000"
+    assert kwargs.get("motivo") == "Dolor de espalda"
+
+
+def test_aprobar_sin_telefono_ni_aclaracion_los_manda_vacios(monkeypatch):
+    """La descripción del turno no siempre tiene esas líneas — son
+    opcionales en anotar_reserva()."""
+    canal = ChatwootFalso(contacto_id="99")
+    calendario = _CalendarioDeMentira()
+    calendario.eventos["evento-1"] = {
+        "status": "tentative",
+        "summary": "Ana (1p)",
+        "description": "Nombre: Ana\nPersonas: 1\nFecha: 2026-09-14\nHora: 09:00",
+        "start": {"dateTime": "2026-09-14T09:00:00+01:00"},
+    }
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    web = cliente(canal, agente, calendario=calendario)
+
+    llamadas = []
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "registrar_visita",
+        lambda *a, **k: llamadas.append((a, k)),
+    )
+
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+    with web as w:
+        w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+
+    _, kwargs = llamadas[0]
+    assert kwargs.get("telefono") == ""
+    assert kwargs.get("motivo") == ""
 
 
 def test_rechazar_no_registra_ninguna_visita(monkeypatch):
@@ -257,3 +295,16 @@ def test_sin_reserva_secreto_configurado_da_404():
 
     assert respuesta.status_code == 404
     assert calendario.aprobados == []
+
+
+# -- _campo_de_descripcion -------------------------------------------------------
+
+
+def test_campo_de_descripcion_encuentra_la_linea():
+    descripcion = "Nombre: Ana\nTeléfono: +351900000000\nAclaración: Dolor"
+    assert webhook_modulo._campo_de_descripcion(descripcion, "Teléfono") == "+351900000000"
+    assert webhook_modulo._campo_de_descripcion(descripcion, "Aclaración") == "Dolor"
+
+
+def test_campo_de_descripcion_vacio_si_no_esta():
+    assert webhook_modulo._campo_de_descripcion("Nombre: Ana", "Teléfono") == ""

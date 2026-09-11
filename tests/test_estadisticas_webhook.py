@@ -120,6 +120,7 @@ def test_el_detalle_muestra_nombre_telefono_y_si_es_nueva(monkeypatch):
             {
                 "nombre": "Antonio",
                 "telefono": "+351964587322",
+                "motivo": "Esguince de tobillo",
                 "fecha": "2026-09-14",
                 "hora": "09:00",
                 "es_nueva": True,
@@ -127,6 +128,7 @@ def test_el_detalle_muestra_nombre_telefono_y_si_es_nueva(monkeypatch):
             {
                 "nombre": "Ricardo",
                 "telefono": "",
+                "motivo": "",
                 "fecha": "2026-09-10",
                 "hora": "17:00",
                 "es_nueva": False,
@@ -140,6 +142,7 @@ def test_el_detalle_muestra_nombre_telefono_y_si_es_nueva(monkeypatch):
     assert respuesta.status_code == 200
     assert "Antonio" in respuesta.text
     assert "+351964587322" in respuesta.text
+    assert "Esguince de tobillo" in respuesta.text
     assert "Nueva" in respuesta.text
     assert "Recurrente" in respuesta.text
     assert "Ricardo" in respuesta.text
@@ -158,6 +161,7 @@ def test_un_nombre_con_html_no_se_ejecuta(monkeypatch):
             {
                 "nombre": "<script>alert(1)</script>",
                 "telefono": "",
+                "motivo": "",
                 "fecha": "2026-09-14",
                 "hora": "09:00",
                 "es_nueva": True,
@@ -170,3 +174,30 @@ def test_un_nombre_con_html_no_se_ejecuta(monkeypatch):
 
     assert "<script>alert(1)</script>" not in respuesta.text
     assert "&lt;script&gt;" in respuesta.text
+
+
+def test_un_motivo_con_html_no_se_ejecuta(monkeypatch):
+    """Mismo caso que el nombre: el motivo de consulta también lo escribe
+    la persona por chat."""
+    web, _ = _armar()
+    monkeypatch.setattr(webhook_modulo.visitas, "resumen_mensual", lambda dsn: [])
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "listar_visitas",
+        lambda dsn: [
+            {
+                "nombre": "Ana",
+                "telefono": "",
+                "motivo": "<img src=x onerror=alert(1)>",
+                "fecha": "2026-09-14",
+                "hora": "09:00",
+                "es_nueva": True,
+            }
+        ],
+    )
+
+    with web as w:
+        respuesta = w.get("/estadisticas?token=shhh-stats")
+
+    assert "<img src=x onerror=alert(1)>" not in respuesta.text
+    assert "&lt;img" in respuesta.text

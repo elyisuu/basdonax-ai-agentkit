@@ -654,9 +654,19 @@ alguien adivine cualquier token.
   por `contacto_id`: la primera visita de cada persona es "nueva", el
   resto "recurrente").
 - **Detalle turno por turno** — `visitas.py: listar_visitas()`: nombre,
-  teléfono, fecha, hora y si fue la primera vez, los últimos 200 por
-  default (`limite`). Es lo que le permite al dueño responder "¿quién
-  vino esta semana?", no solo "¿cuántos?".
+  teléfono, **motivo de consulta**, fecha, hora y si fue la primera vez,
+  los últimos 200 por default (`limite`). Es lo que le permite al dueño
+  responder "¿quién vino esta semana?", no solo "¿cuántos?".
+
+**El motivo (`aclaracion` en `anotar_reserva`) se agregó después que el
+resto de la tabla** — la columna se suma con `ALTER TABLE ... ADD COLUMN
+IF NOT EXISTS` en `visitas.preparar()`, no con el `CREATE TABLE IF NOT
+EXISTS` de siempre, porque en producción la tabla ya existía sin ella.
+Es el patrón a seguir la próxima vez que se agregue un campo a `visitas`.
+En la ruta de aprobación (`web/webhook.py`), el motivo y el teléfono no
+vienen del evento como campos propios — se sacan de la descripción de
+Calendar (`_campo_de_descripcion()`, busca la línea `"Aclaración: ..."` /
+`"Teléfono: ..."` que arma `anotar_reserva()`).
 
 A diferencia de `registrar_visita()`, acá un error de conexión **sí** se
 muestra tal cual en la página (500, con el error) en vez de tragarse
@@ -664,12 +674,13 @@ silencioso: no hay ninguna reserva real en juego, así que mostrar el
 problema es mejor que una tabla vacía que parece decir "no tuviste
 turnos" sin serlo.
 
-**El nombre y el teléfono del detalle pasan por `html.escape()` antes de
-entrar a la página.** Son texto que la persona escribió por WhatsApp, no
-algo que el sistema generó — sin escapar, alguien podría poner
-`<script>...</script>` como "nombre" y que corra en la pantalla que abre
-el dueño del negocio. El resumen mensual no necesita esto: `mes` sale de
-`to_char()` en la propia consulta, no de lo que alguien tipeó.
+**El nombre, el teléfono y el motivo del detalle pasan por `html.escape()`
+antes de entrar a la página.** Son texto que la persona escribió por
+WhatsApp, no algo que el sistema generó — sin escapar, alguien podría
+poner `<script>...</script>` como "nombre" (o como motivo) y que corra en
+la pantalla que abre el dueño del negocio. El resumen mensual no necesita
+esto: `mes` sale de `to_char()` en la propia consulta, no de lo que
+alguien tipeó.
 
 ## Reintentos en Chatwoot y Google Calendar
 

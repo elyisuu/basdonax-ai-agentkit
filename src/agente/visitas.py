@@ -50,6 +50,7 @@ def preparar(dsn: str) -> None:
                 contacto_id TEXT NOT NULL,
                 telefono TEXT NOT NULL DEFAULT '',
                 nombre TEXT NOT NULL DEFAULT '',
+                motivo TEXT NOT NULL DEFAULT '',
                 fecha_turno DATE NOT NULL,
                 hora_turno TEXT NOT NULL,
                 creado_en TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -61,6 +62,13 @@ def preparar(dsn: str) -> None:
         conexion.execute(
             "CREATE INDEX IF NOT EXISTS visitas_contacto_idx ON visitas (contacto_id)"
         )
+        # ADD COLUMN IF NOT EXISTS: para cuando la tabla YA existía sin esta
+        # columna (se sumó después del primer despliegue) — el CREATE TABLE
+        # de arriba no toca una tabla que ya está. Este patrón es el que
+        # seguir la próxima vez que se agregue un campo acá.
+        conexion.execute(
+            "ALTER TABLE visitas ADD COLUMN IF NOT EXISTS motivo TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def registrar_visita(
@@ -70,6 +78,7 @@ def registrar_visita(
     hora_turno: str,
     telefono: str = "",
     nombre: str = "",
+    motivo: str = "",
 ) -> bool:
     """Guarda una visita confirmada. Devuelve si se pudo guardar.
 
@@ -88,10 +97,10 @@ def registrar_visita(
             conexion.execute(
                 """
                 INSERT INTO visitas
-                    (contacto_id, telefono, nombre, fecha_turno, hora_turno)
-                VALUES (%s, %s, %s, %s, %s)
+                    (contacto_id, telefono, nombre, motivo, fecha_turno, hora_turno)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (contacto_id, telefono, nombre, fecha_turno, hora_turno),
+                (contacto_id, telefono, nombre, motivo, fecha_turno, hora_turno),
             )
         return True
     except Exception as e:
@@ -166,6 +175,7 @@ def listar_visitas(dsn: str, limite: int = 200) -> list[dict]:
             SELECT
                 nombre,
                 telefono,
+                motivo,
                 to_char(fecha_turno, 'YYYY-MM-DD') AS fecha,
                 hora_turno,
                 ROW_NUMBER() OVER (
@@ -183,9 +193,10 @@ def listar_visitas(dsn: str, limite: int = 200) -> list[dict]:
         {
             "nombre": nombre,
             "telefono": telefono,
+            "motivo": motivo,
             "fecha": fecha,
             "hora": hora,
             "es_nueva": es_nueva,
         }
-        for nombre, telefono, fecha, hora, es_nueva in filas
+        for nombre, telefono, motivo, fecha, hora, es_nueva in filas
     ]

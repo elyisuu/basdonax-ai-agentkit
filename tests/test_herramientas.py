@@ -443,8 +443,8 @@ def test_confirmar_el_turno_registra_la_visita(monkeypatch):
     monkeypatch.setattr(
         herramientas.visitas,
         "registrar_visita",
-        lambda dsn, contacto_id, fecha, hora, telefono="", nombre="": llamadas.append(
-            (dsn, contacto_id, fecha, hora, telefono, nombre)
+        lambda dsn, contacto_id, fecha, hora, telefono="", nombre="", motivo="": llamadas.append(
+            (dsn, contacto_id, fecha, hora, telefono, nombre, motivo)
         ),
     )
 
@@ -455,12 +455,13 @@ def test_confirmar_el_turno_registra_la_visita(monkeypatch):
             "fecha": "2026-09-12",
             "hora": "10:00",
             "telefono": "+351900000000",
+            "aclaracion": "Dolor de espalda",
         },
         config=_config(),
     )
 
     assert llamadas == [
-        ("dsn-falso", "99", "2026-09-12", "10:00", "+351900000000", "Ana")
+        ("dsn-falso", "99", "2026-09-12", "10:00", "+351900000000", "Ana", "Dolor de espalda")
     ]
 
 

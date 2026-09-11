@@ -81,16 +81,19 @@ def test_registrar_sin_contacto_id_no_hace_nada(monkeypatch):
 # -- Preparar la tabla ----------------------------------------------------------
 
 
-def test_preparar_crea_la_tabla_y_el_indice(monkeypatch):
+def test_preparar_crea_la_tabla_el_indice_y_la_columna_motivo(monkeypatch):
     conexion = _ConexionDeMentira()
     _psycopg_falso(monkeypatch, conexion)
 
     visitas.preparar("dsn-falso")
 
-    assert len(conexion.ejecutados) == 2
+    assert len(conexion.ejecutados) == 3
     assert "CREATE TABLE" in conexion.ejecutados[0][0]
     assert "visitas" in conexion.ejecutados[0][0]
     assert "CREATE INDEX" in conexion.ejecutados[1][0]
+    # ADD COLUMN IF NOT EXISTS: para la tabla que ya existía sin "motivo"
+    # antes de que se agregara — ver AGENTS.md.
+    assert "ADD COLUMN IF NOT EXISTS motivo" in conexion.ejecutados[2][0]
 
 
 # -- Registrar una visita --------------------------------------------------------
@@ -101,24 +104,30 @@ def test_registrar_ejecuta_el_insert_con_los_datos(monkeypatch):
     _psycopg_falso(monkeypatch, conexion)
 
     ok = visitas.registrar_visita(
-        "dsn-falso", "7", "2026-09-14", "10:00", telefono="+351900000000", nombre="Ana"
+        "dsn-falso",
+        "7",
+        "2026-09-14",
+        "10:00",
+        telefono="+351900000000",
+        nombre="Ana",
+        motivo="Dolor de espalda",
     )
 
     assert ok is True
     assert len(conexion.ejecutados) == 1
     sql, params = conexion.ejecutados[0]
     assert "INSERT INTO visitas" in sql
-    assert params == ("7", "+351900000000", "Ana", "2026-09-14", "10:00")
+    assert params == ("7", "+351900000000", "Ana", "Dolor de espalda", "2026-09-14", "10:00")
 
 
-def test_registrar_sin_telefono_ni_nombre_manda_vacio(monkeypatch):
+def test_registrar_sin_telefono_nombre_ni_motivo_manda_vacio(monkeypatch):
     conexion = _ConexionDeMentira()
     _psycopg_falso(monkeypatch, conexion)
 
     visitas.registrar_visita("dsn-falso", "7", "2026-09-14", "10:00")
 
     _, params = conexion.ejecutados[0]
-    assert params == ("7", "", "", "2026-09-14", "10:00")
+    assert params == ("7", "", "", "", "2026-09-14", "10:00")
 
 
 def test_registrar_si_la_conexion_falla_no_revienta(monkeypatch):
@@ -184,8 +193,8 @@ def test_listar_sin_dsn_devuelve_lista_vacia():
 def test_listar_arma_los_diccionarios_con_las_filas(monkeypatch):
     conexion = _ConexionDeMentira(
         filas_a_devolver=[
-            ("Ana", "+351900000000", "2026-09-14", "09:00", True),
-            ("Ana", "+351900000000", "2026-03-02", "10:00", False),
+            ("Ana", "+351900000000", "Dolor de espalda", "2026-09-14", "09:00", True),
+            ("Ana", "+351900000000", "", "2026-03-02", "10:00", False),
         ]
     )
     _psycopg_falso(monkeypatch, conexion)
@@ -196,6 +205,7 @@ def test_listar_arma_los_diccionarios_con_las_filas(monkeypatch):
         {
             "nombre": "Ana",
             "telefono": "+351900000000",
+            "motivo": "Dolor de espalda",
             "fecha": "2026-09-14",
             "hora": "09:00",
             "es_nueva": True,
@@ -203,6 +213,7 @@ def test_listar_arma_los_diccionarios_con_las_filas(monkeypatch):
         {
             "nombre": "Ana",
             "telefono": "+351900000000",
+            "motivo": "",
             "fecha": "2026-03-02",
             "hora": "10:00",
             "es_nueva": False,

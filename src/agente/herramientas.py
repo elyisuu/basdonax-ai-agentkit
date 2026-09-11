@@ -396,7 +396,9 @@ def anotar_reserva(
                 # aviso que no salió.
 
     if confirmada:
-        _registrar_visita(chatwoot, conversacion, ajustes, fecha, hora, nombre, telefono)
+        _registrar_visita(
+            chatwoot, conversacion, ajustes, fecha, hora, nombre, telefono, aclaracion
+        )
         return f"Turno confirmado para el {fecha} a las {hora}. Avisale a la persona."
 
     if evento_pendiente_id:
@@ -804,6 +806,7 @@ def _registrar_visita(
     hora: str,
     nombre: str,
     telefono: str,
+    motivo: str = "",
 ) -> None:
     """Guarda la visita para las estadísticas (ver visitas.py) — solo
     cuando el turno queda CONFIRMADO de verdad, nunca antes.
@@ -832,6 +835,7 @@ def _registrar_visita(
             hora,
             telefono=telefono,
             nombre=nombre,
+            motivo=motivo,
         )
     except Exception:
         pass
