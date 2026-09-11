@@ -34,6 +34,10 @@ class MensajeEntrante:
     conversacion: str          # el thread_id: quién habla
     identificador: str = ""    # el id del mensaje en el canal, para no repetirlo
     datos: dict = field(default_factory=dict)  # lo crudo, por si el canal lo necesita
+    # Un audio, una foto, un adjunto sin nada de texto. El canal ya sabe que
+    # no puede pasar esto por el modelo (no hay nada que leer), pero igual
+    # hay que contestar algo en vez de quedarse callado — ver webhook.py.
+    es_adjunto_sin_texto: bool = False
 
 
 class Canal(ABC):

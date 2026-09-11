@@ -39,7 +39,7 @@ from .. import alertas, aprobacion
 from ..agente import Agente
 from ..calendario import Calendario, ErrorDeCalendario
 from ..canales.buffer import BufferDeMensajes
-from ..canales.chatwoot import Chatwoot
+from ..canales.chatwoot import MENSAJE_ADJUNTO_SIN_TEXTO, Chatwoot
 from ..config import Config
 from ..memoria import verificar as verificar_memoria
 
@@ -220,6 +220,14 @@ def crear_app(
             # No es un error: es la mayoría de lo que llega. Cada respuesta
             # que manda el propio agente vuelve como un evento más.
             return JSONResponse({"estado": "ignorado"})
+
+        if entrante.es_adjunto_sin_texto:
+            # Un audio, una foto, un adjunto suelto: no hay nada que el
+            # modelo pueda leer ahí. Contestamos algo fijo y ya — ni vale la
+            # pena gastar un turno del modelo en algo tan predecible, y así
+            # la persona no se queda pensando que no le llegó el mensaje.
+            canal.enviar(entrante.conversacion, [MENSAJE_ADJUNTO_SIN_TEXTO])
+            return JSONResponse({"estado": "recibido"})
 
         # Se suma a la ráfaga y contestamos ya. Lo que sigue pasa solo.
         await buffer.agregar(entrante.conversacion, entrante.texto)

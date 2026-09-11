@@ -34,9 +34,14 @@ def evento(
     privado=False,
     etiquetas=None,
     nombre="message_created",
+    adjuntos=None,
 ) -> dict:
-    """Un mensaje como lo manda el webhook de Chatwoot."""
-    return {
+    """Un mensaje como lo manda el webhook de Chatwoot.
+
+    `adjuntos`: para simular un audio, una foto o un documento. Alcanza con
+    que la lista no esté vacía — no nos importa el contenido real.
+    """
+    cuerpo = {
         "event": nombre,
         "id": id_mensaje,
         "content": texto,
@@ -50,6 +55,9 @@ def evento(
         "account": {"id": 1},
         "inbox": {"id": 6, "name": "YT"},
     }
+    if adjuntos is not None:
+        cuerpo["attachments"] = adjuntos
+    return cuerpo
 
 
 class ChatwootFalso(Chatwoot):
@@ -108,10 +116,34 @@ def test_los_otros_eventos_se_dejan_pasar(nombre):
     assert ChatwootFalso().traducir(evento(nombre=nombre)) is None
 
 
-def test_un_mensaje_sin_texto_se_deja_pasar():
-    """Un audio o una foto sueltos: el agente todavía no sabe leer eso."""
+def test_un_mensaje_sin_texto_ni_adjunto_se_deja_pasar():
+    """Sin texto y sin adjunto no hay nada que contestar — pasa un evento
+    vacío de verdad, no un audio o una foto (ver el test de abajo)."""
     assert ChatwootFalso().traducir(evento(texto="")) is None
     assert ChatwootFalso().traducir(evento(texto="   ")) is None
+
+
+def test_un_adjunto_sin_texto_se_traduce_para_contestar_algo():
+    """Un audio, una foto, un documento sin nada escrito: el modelo no
+    puede leer eso, pero la persona espera que le contesten igual (ver
+    MENSAJE_ADJUNTO_SIN_TEXTO en webhook.py) — antes esto se tiraba como
+    si nunca hubiera llegado nada."""
+    entrante = ChatwootFalso().traducir(evento(texto="", adjuntos=[{"file_type": "audio"}]))
+
+    assert entrante is not None
+    assert entrante.texto == ""
+    assert entrante.es_adjunto_sin_texto is True
+
+
+def test_una_foto_con_epigrafe_es_un_mensaje_normal():
+    """Si mandó texto junto con la foto, hay algo real que leer — no es el
+    caso del adjunto mudo."""
+    entrante = ChatwootFalso().traducir(
+        evento(texto="¿este ejercicio es para la espalda?", adjuntos=[{"file_type": "image"}])
+    )
+
+    assert entrante.es_adjunto_sin_texto is False
+    assert entrante.texto == "¿este ejercicio es para la espalda?"
 
 
 # -- Qué se contesta y qué no -------------------------------------------------
@@ -446,6 +478,26 @@ def test_el_mensaje_da_la_vuelta_completa():
     assert respuesta.status_code == 200
     assert respuesta.json()["estado"] == "recibido"
     assert canal.envios() == ["¡Buenas! ¿En qué te ayudo?"]
+
+
+def test_un_audio_se_contesta_sin_pasar_por_el_modelo():
+    """De punta a punta: antes esto quedaba en silencio total."""
+    from agente.canales.chatwoot import MENSAJE_ADJUNTO_SIN_TEXTO
+    from test_agente import agente_falso
+
+    canal = ChatwootFalso()
+    # Sin respuestas cargadas: si esto tocara el modelo, revienta el test.
+    agente = agente_falso([])
+
+    with cliente(canal, agente) as web:
+        respuesta = web.post(
+            "/chatwoot/secreto",
+            json=evento(texto="", conversacion=55, adjuntos=[{"file_type": "audio"}]),
+        )
+
+    assert respuesta.status_code == 200
+    assert respuesta.json()["estado"] == "recibido"
+    assert canal.envios() == [MENSAJE_ADJUNTO_SIN_TEXTO]
 
 
 def test_con_el_token_equivocado_no_entra():

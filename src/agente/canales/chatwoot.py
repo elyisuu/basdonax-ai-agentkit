@@ -41,6 +41,18 @@ from .base import Canal, MensajeEntrante
 # el agente, así que si tarda más que esto es porque algo anda mal.
 ESPERA_DE_RED = 20
 
+# Lo que contestamos cuando llega un audio, una foto o cualquier adjunto sin
+# texto: el modelo todavía no puede leer eso, y quedarse callado se siente
+# como que el bot está roto. Fija y sin pasar por el modelo a propósito — es
+# predecible, así que no hace falta gastar un turno pensándola. En los tres
+# idiomas que atendemos (ver prompts/sistema.md) porque acá no sabemos
+# todavía en cuál le estábamos hablando a esta persona.
+MENSAJE_ADJUNTO_SIN_TEXTO = (
+    "📎 Ainda não consigo ouvir áudios nem ver fotos — escreve, por favor?\n"
+    "Todavía no puedo escuchar audios ni ver fotos — ¿me escribís, porfa?\n"
+    "I can't listen to audio or see photos yet — could you type it, please?"
+)
+
 
 class ErrorDeChatwoot(Exception):
     """Chatwoot contestó algo que no esperábamos."""
@@ -81,8 +93,10 @@ class Chatwoot(Canal):
         """Convierte un evento del webhook en algo que el agente entiende.
 
         Devuelve None si el evento no es un mensaje que tengamos que mirar:
-        otro tipo de evento, o un mensaje sin texto (un audio, una foto, un
-        adjunto suelto) que el agente todavía no sabe leer.
+        otro tipo de evento, o un mensaje sin nada — ni texto ni adjunto.
+        Un audio, una foto o un adjunto sin texto SÍ se traduce (con
+        `es_adjunto_sin_texto=True`): no hay nada que el modelo pueda leer
+        ahí, pero el que lo mandó espera que le contesten algo igual.
         """
         if evento.get("event") != "message_created":
             return None
@@ -90,8 +104,9 @@ class Chatwoot(Canal):
         conversacion = evento.get("conversation") or {}
         id_conversacion = conversacion.get("id")
         texto = (evento.get("content") or "").strip()
+        tiene_adjunto = bool(evento.get("attachments"))
 
-        if not id_conversacion or not texto:
+        if not id_conversacion or not (texto or tiene_adjunto):
             return None
 
         return MensajeEntrante(
@@ -101,6 +116,7 @@ class Chatwoot(Canal):
             conversacion=str(id_conversacion),
             identificador=str(evento.get("id") or ""),
             datos=evento,
+            es_adjunto_sin_texto=tiene_adjunto and not texto,
         )
 
     def deberia_responder(self, mensaje: MensajeEntrante) -> bool:
