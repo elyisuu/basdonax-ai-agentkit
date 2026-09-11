@@ -677,16 +677,19 @@ def actualizar_ficha_cliente(nombre: str = "", nota: str = "", *, config: Runnab
     """Guarda datos de la persona para que no haya que volver a preguntarlos
     la próxima vez que escriba.
 
-    Usala cuando te diga su nombre y todavía no lo tenías, o cuando salga
-    algo puntual que valga la pena recordar de ELLA (no del motivo de la
-    consulta de hoy — eso va en el parámetro `aclaracion` de
-    `anotar_reserva`): una preferencia, un dato de contacto, algo que dijo
-    que conviene tener a mano la próxima vez. No hace falta llamarla en cada
-    mensaje — solo cuando hay algo nuevo para guardar.
+    Llamala SIEMPRE que la persona diga su nombre por primera vez en esta
+    charla — aunque en ese momento estés en el medio de otra cosa (una
+    reserva, una pregunta): no hace falta terminar esa parte primero, ni
+    esperar a que "parezca importante". También llamala cuando salga algo
+    puntual que valga la pena recordar de ELLA (no del motivo de la consulta
+    de hoy — eso va en el parámetro `aclaracion` de `anotar_reserva`): una
+    preferencia, un dato de contacto, algo que conviene tener a mano la
+    próxima vez. No hace falta llamarla en cada mensaje — solo la primera
+    vez que aparece cada dato nuevo.
 
     Args:
-        nombre: El nombre de la persona, si lo mencionó recién. Dejalo
-            vacío si no dijo nada nuevo sobre esto.
+        nombre: El nombre de la persona, apenas lo diga por primera vez.
+            Dejalo vacío si ya lo tenías o si no dijo nada nuevo.
         nota: Un dato suelto para recordar de la próxima vez, en pocas
             palabras. Dejalo vacío si no hay nada nuevo.
     """
