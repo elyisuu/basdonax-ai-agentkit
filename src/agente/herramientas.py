@@ -6,7 +6,7 @@ y LangGraph la corre y le devuelve el resultado. Por eso el **docstring importa
 tanto como el código**: es literalmente lo único que el modelo lee para decidir
 si esta herramienta le sirve y qué mandarle.
 
-Son siete:
+Son ocho:
 
   · `clima`                  → no necesita nada del canal, funciona en
                                 cualquiera.
@@ -26,7 +26,11 @@ Son siete:
                                 cualquiera de calendario/Chatwoot, con los
                                 dos, o con ninguno — en ese último caso
                                 avisa que no puede tomar reservas en ese
-                                canal, en vez de fallar.
+                                canal, en vez de fallar. Al confirmar de
+                                una, además registra la visita (ver
+                                visitas.py) para las estadísticas del
+                                negocio — esto no depende del modelo, es
+                                código que corre siempre.
   · `cancelar_mi_reserva`    → cancela un turno ya anotado en ESTA
                                 conversación. Necesita calendario conectado
                                 (busca el evento por horario, no guarda su
@@ -79,7 +83,7 @@ from zoneinfo import ZoneInfo
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from . import alertas, aprobacion, horario
+from . import alertas, aprobacion, horario, visitas
 from .calendario import Calendario, conversacion_del_evento
 from .canales.chatwoot import Chatwoot
 from .config import Config
@@ -392,6 +396,7 @@ def anotar_reserva(
                 # aviso que no salió.
 
     if confirmada:
+        _registrar_visita(chatwoot, conversacion, ajustes, fecha, hora, nombre, telefono)
         return f"Turno confirmado para el {fecha} a las {hora}. Avisale a la persona."
 
     if evento_pendiente_id:
@@ -787,6 +792,47 @@ def _avisar_a_chatwoot(config: RunnableConfig, texto: str, etiqueta: str = "") -
         chatwoot.anotar(conversacion, texto)
         if etiqueta:
             chatwoot.etiquetar(conversacion, etiqueta)
+    except Exception:
+        pass
+
+
+def _registrar_visita(
+    chatwoot: Chatwoot | None,
+    conversacion: str,
+    ajustes: Config,
+    fecha: str,
+    hora: str,
+    nombre: str,
+    telefono: str,
+) -> None:
+    """Guarda la visita para las estadísticas (ver visitas.py) — solo
+    cuando el turno queda CONFIRMADO de verdad, nunca antes.
+
+    A diferencia de actualizar_ficha_cliente, esto no es una herramienta
+    que el modelo decide llamar: se llama siempre, en código, desde
+    anotar_reserva() cuando confirma, y desde la ruta de aprobar en
+    web/webhook.py cuando el negocio aprueba una pendiente — así el conteo
+    no depende de que el modelo se acuerde de nada.
+
+    Nunca revienta: una estadística perdida no puede voltear una reserva
+    que ya se confirmó de verdad (mismo criterio que _avisar_a_chatwoot).
+    """
+    if chatwoot is None or not conversacion:
+        return
+
+    try:
+        contacto_id = chatwoot.contacto_de(conversacion)
+        if not contacto_id:
+            return
+
+        visitas.registrar_visita(
+            ajustes.postgres_dsn,
+            contacto_id,
+            fecha,
+            hora,
+            telefono=telefono,
+            nombre=nombre,
+        )
     except Exception:
         pass
 

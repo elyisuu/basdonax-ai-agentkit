@@ -45,6 +45,7 @@ Lo que importa acá es qué hace cada uno:
 | `reintentos.py` | Backoff para las llamadas HTTP a Chatwoot y Google Calendar |
 | `alertas.py` | Avisa por Telegram (a un chat propio) cuando algo se rompe en producción |
 | `recordatorios.py` | Programa aparte (raíz del repo): recordatorios de turnos por WhatsApp, para dejar programado (Scheduled Task) |
+| `visitas.py` | Registro de turnos confirmados (nuevos vs. recurrentes), para las estadísticas del negocio — corre en código, no es una herramienta del modelo |
 | `modelos.py` | Crea el modelo y le pregunta al proveedor cuáles tiene |
 | `memoria.py` | Los checkpointers: `ram` / `sqlite` / `postgres` |
 | `prompts.py` | Lee y guarda `prompts/sistema.md` |
@@ -601,6 +602,47 @@ rechazar sería peor que no avisar nada.
 corrida) tienen que llevarse bien con cada cuánto programás la Scheduled
 Task: con una corrida cada hora, la ventana tiene que ser de una hora como
 mínimo para no dejar turnos sin avisar en el medio.
+
+## Estadísticas para el dueño del negocio (nuevos vs. recurrentes)
+
+`visitas.py` — una tabla propia (`visitas`) en la MISMA Postgres de
+`MODO=produccion` (`POSTGRES_DSN`), para que el negocio pueda ver a fin de
+mes cuántos turnos fueron de clientes nuevos y cuántos de recurrentes. Es
+el punto de partida de un dashboard más adelante (todavía no existe
+ninguna pantalla — esto es solo el registro).
+
+**A propósito NO es una herramienta que el modelo decide llamar** — a
+diferencia de `actualizar_ficha_cliente`, que en una prueba real el modelo
+no llamó aunque tenía el dato a mano. Para que el conteo sea confiable, el
+registro corre siempre, en código:
+
+- `anotar_reserva()` (`herramientas.py`) registra la visita cuando confirma
+  un turno DE UNA (sin aprobación manual).
+- La ruta `/reservas/aprobar` (`web/webhook.py`) la registra cuando el
+  negocio aprueba una reserva `"tentative"` — nunca al crearla, para no
+  contar turnos que después se rechazan.
+- La tabla se crea sola al arrancar (`visitas.preparar()`, en el
+  `ciclo_de_vida` de `web/webhook.py`), mismo momento en que
+  `PostgresSaver.setup()` arma las suyas para la memoria.
+
+**Identidad = contacto de Chatwoot, no conversación.** Mismo motivo que
+`actualizar_ficha_cliente`: si Chatwoot abre una conversación nueva porque
+la anterior se resolvió, el `thread_id` cambia pero la persona es la
+misma — `contacto_de()` es lo único estable para saber si alguien ya había
+venido antes.
+
+**"Nuevo" vs. "recurrente" (decisión de producto, 11 sep 2026):**
+recurrente = ya tiene al menos una visita registrada antes, sin importar
+cuánto hace. No hay ventana de tiempo (un cliente de hace dos años cuenta
+igual que uno de la semana pasada) — se eligió así por simple, no por que
+sea la única forma válida; si en algún momento hace falta distinguir
+"activo" de "inactivo hace mucho" para una campaña de reactivación, es un
+cálculo nuevo sobre los mismos datos, no un cambio de esquema.
+
+Sin `POSTGRES_DSN` (`MODO=test`, o Postgres no configurado), no hace nada
+y no rompe nada — mismo espíritu que `alertas.py`/`recordatorios.py`. Nunca
+revienta una reserva ni una aprobación: perder una estadística no puede
+voltear algo que ya pasó de verdad.
 
 ## Reintentos en Chatwoot y Google Calendar
 

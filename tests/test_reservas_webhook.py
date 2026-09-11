@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agente import aprobacion  # noqa: E402
 from agente.calendario import ErrorDeCalendario  # noqa: E402
+from agente.web import webhook as webhook_modulo  # noqa: E402
 
 from test_agente import agente_falso  # noqa: E402
 from test_chatwoot import ChatwootFalso, cliente  # noqa: E402
@@ -82,6 +83,63 @@ def test_aprobar_con_token_valido_confirma_y_avisa():
     assert calendario.aprobados == ["evento-1"]
     assert "confirmado" in canal.envios()[0].lower()
     assert _etiqueta_puesta(canal) == "reserva-confirmada"
+
+
+def test_aprobar_registra_la_visita(monkeypatch):
+    """Recién ACÁ se registra la visita para las estadísticas — no cuando
+    se creó la reserva "tentative" (ver herramientas.py, anotar_reserva)."""
+    canal = ChatwootFalso(contacto_id="99")
+    calendario = _CalendarioDeMentira()
+    calendario.eventos["evento-1"] = {
+        "status": "tentative",
+        "summary": "Ana (1p)",
+        "start": {"dateTime": "2026-09-14T09:00:00+01:00"},
+    }
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    web = cliente(canal, agente, calendario=calendario)
+
+    llamadas = []
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "registrar_visita",
+        lambda *a, **k: llamadas.append((a, k)),
+    )
+
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+    with web as w:
+        w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+
+    assert len(llamadas) == 1
+    args, kwargs = llamadas[0]
+    assert args[:4] == (agente.config.postgres_dsn, "99", "2026-09-14", "09:00")
+    assert kwargs.get("nombre") == "Ana"
+
+
+def test_rechazar_no_registra_ninguna_visita(monkeypatch):
+    canal = ChatwootFalso(contacto_id="99")
+    calendario = _CalendarioDeMentira()
+    calendario.eventos["evento-1"] = {
+        "status": "tentative",
+        "summary": "Ana (1p)",
+        "start": {"dateTime": "2026-09-14T09:00:00+01:00"},
+    }
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    web = cliente(canal, agente, calendario=calendario)
+
+    llamadas = []
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "registrar_visita",
+        lambda *a, **k: llamadas.append((a, k)),
+    )
+
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+    with web as w:
+        w.get(f"/reservas/rechazar/42/evento-1?token={token}")
+
+    assert llamadas == []
 
 
 def test_rechazar_con_token_valido_cancela_y_avisa():

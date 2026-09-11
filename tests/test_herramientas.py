@@ -257,6 +257,7 @@ class _AjustesDeMentira:
         alerta_telegram_token="",
         alerta_telegram_chat_id="",
         zona_horaria="UTC",
+        postgres_dsn="",
     ) -> None:
         self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
         self.url_publica = url_publica
@@ -270,6 +271,7 @@ class _AjustesDeMentira:
         self.alerta_telegram_token = alerta_telegram_token
         self.alerta_telegram_chat_id = alerta_telegram_chat_id
         self.zona_horaria = zona_horaria
+        self.postgres_dsn = postgres_dsn
 
 
 @pytest.fixture(autouse=True)
@@ -423,6 +425,85 @@ def test_con_calendario_libre_confirma_el_turno(monkeypatch):
     assert cal.eventos[0]["titulo"] == "Ana (1p)"
     # También le queda una constancia al equipo en la bandeja de Chatwoot.
     assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA)]
+
+
+def test_confirmar_el_turno_registra_la_visita(monkeypatch):
+    """A diferencia de actualizar_ficha_cliente, esto no depende de que el
+    modelo decida llamar nada: anotar_reserva lo hace siempre que confirma."""
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira(contacto_id="99")
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(postgres_dsn="dsn-falso"),
+    )
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    llamadas = []
+    monkeypatch.setattr(
+        herramientas.visitas,
+        "registrar_visita",
+        lambda dsn, contacto_id, fecha, hora, telefono="", nombre="": llamadas.append(
+            (dsn, contacto_id, fecha, hora, telefono, nombre)
+        ),
+    )
+
+    anotar_reserva.invoke(
+        {
+            "nombre": "Ana",
+            "personas": 1,
+            "fecha": "2026-09-12",
+            "hora": "10:00",
+            "telefono": "+351900000000",
+        },
+        config=_config(),
+    )
+
+    assert llamadas == [
+        ("dsn-falso", "99", "2026-09-12", "10:00", "+351900000000", "Ana")
+    ]
+
+
+def test_una_reserva_pendiente_de_aprobacion_no_registra_visita_todavia(monkeypatch):
+    """Contarla al crearla inflaría las estadísticas con turnos que después
+    se rechazan — se registra recién cuando se aprueba (web/webhook.py)."""
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira(contacto_id="99")
+    _con_aprobacion(monkeypatch)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    llamadas = []
+    monkeypatch.setattr(
+        herramientas.visitas, "registrar_visita", lambda *a, **k: llamadas.append((a, k))
+    )
+
+    anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 2, "fecha": "2026-09-12", "hora": "20:00"},
+        config=_config(),
+    )
+
+    assert llamadas == []
+
+
+def test_si_no_hay_contacto_no_registra_visita_pero_confirma_igual(monkeypatch):
+    """Sin poder identificar a la persona no hay a quién atribuirle la
+    visita — pero eso no puede voltear la reserva, que sí es real."""
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira(contacto_id=None)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    llamadas = []
+    monkeypatch.setattr(
+        herramientas.visitas, "registrar_visita", lambda *a, **k: llamadas.append((a, k))
+    )
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(),
+    )
+
+    assert "confirmado" in resultado.lower()
+    assert llamadas == []
 
 
 def test_la_descripcion_del_calendario_lleva_la_conversacion(monkeypatch):

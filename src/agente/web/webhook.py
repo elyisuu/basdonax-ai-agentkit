@@ -35,7 +35,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import alertas, aprobacion
+from .. import alertas, aprobacion, visitas
 from ..agente import Agente
 from ..calendario import Calendario, ErrorDeCalendario
 from ..canales.buffer import BufferDeMensajes
@@ -57,6 +57,35 @@ MENSAJE_ERROR_GENERICO = (
     "Uy, se me rompió algo de mi lado. Ya me avisaron y lo estamos mirando "
     "— probá de nuevo en un rato."
 )
+
+
+def _registrar_visita_aprobada(
+    canal: Chatwoot, config: Config, conversacion: str, evento: dict
+) -> None:
+    """Guarda la visita (ver visitas.py) recién cuando el negocio APRUEBA
+    una reserva "tentative" — no antes: contarla al crearla inflaría las
+    estadísticas con turnos que después se rechazan.
+
+    Nunca revienta: una estadística perdida no puede voltear una
+    aprobación que ya se hizo de verdad. El detalle del fallo, si lo hay,
+    queda en los logs de visitas.py.
+    """
+    try:
+        contacto_id = canal.contacto_de(conversacion)
+        if not contacto_id:
+            return
+
+        inicio = evento.get("start", {}).get("dateTime", "")
+        fecha, _, resto = inicio.partition("T")
+        hora = resto[:5]  # "09:00:00+01:00" -> "09:00"
+        # El título se arma en anotar_reserva() como "Nombre (Np)".
+        nombre = evento.get("summary", "").rsplit(" (", 1)[0]
+
+        visitas.registrar_visita(
+            config.postgres_dsn, contacto_id, fecha, hora, nombre=nombre
+        )
+    except Exception as e:
+        registro.warning("[%s] no se pudo registrar la visita: %s", conversacion, e)
 
 
 def crear_app(
@@ -147,6 +176,15 @@ def crear_app(
 
     @asynccontextmanager
     async def ciclo_de_vida(app: FastAPI):
+        # Mismo momento en que PostgresSaver.setup() arma las tablas de la
+        # memoria (Agente() ya la construyó arriba). Sin POSTGRES_DSN, no
+        # hace nada — ver visitas.py.
+        if config.postgres_dsn:
+            try:
+                await asyncio.to_thread(visitas.preparar, config.postgres_dsn)
+            except Exception as e:
+                registro.warning("no se pudo preparar la tabla de visitas: %s", e)
+
         registro.info(
             "Agente escuchando - %s / %s - memoria %s - buffer %ss",
             config.proveedor,
@@ -298,6 +336,9 @@ def crear_app(
                     )
                     await asyncio.to_thread(
                         canal.etiquetar, conversacion, "reserva-confirmada"
+                    )
+                    await asyncio.to_thread(
+                        _registrar_visita_aprobada, canal, config, conversacion, evento
                     )
                     mensaje = "Reserva aprobada. Ya se le avisó a la persona."
             else:
