@@ -366,4 +366,50 @@ def crear_app(
 
         return HTMLResponse(f"<h1>Listo</h1><p>{mensaje}</p>")
 
+    @app.get("/estadisticas")
+    async def estadisticas(token: str = "") -> HTMLResponse:
+        """Turnos por mes para el dueño del negocio: nuevos vs. recurrentes
+        (ver AGENTS.md, "Estadísticas para el dueño del negocio"). Mismo
+        criterio de seguridad que /reservas/{accion}: un token fijo en la
+        URL (DASHBOARD_SECRETO), sin pantalla de login que mantener.
+        """
+        if not config.dashboard_secreto or token != config.dashboard_secreto:
+            # Sin detalles, mismo motivo que el token del webhook de
+            # Chatwoot: a quien prueba la URL no le decimos si el secreto
+            # existe, si es corto o si le erró por una letra.
+            return HTMLResponse("No encontrado.", status_code=404)
+
+        try:
+            resumen = await asyncio.to_thread(visitas.resumen_mensual, config.postgres_dsn)
+        except Exception as e:
+            registro.error("no se pudo armar /estadisticas: %s", e)
+            return HTMLResponse(
+                f"<h1>No se pudo cargar</h1><p>{type(e).__name__}: {e}</p>",
+                status_code=500,
+            )
+
+        if not resumen:
+            filas_html = '<tr><td colspan="4">Todavía no hay turnos registrados.</td></tr>'
+        else:
+            filas_html = "".join(
+                f"<tr><td>{f['mes']}</td><td>{f['turnos']}</td>"
+                f"<td>{f['nuevos']}</td><td>{f['recurrentes']}</td></tr>"
+                for f in resumen
+            )
+
+        return HTMLResponse(
+            "<html><head><meta charset=\"utf-8\">"
+            "<title>Estadísticas</title>"
+            "<style>"
+            "body{font-family:sans-serif;max-width:640px;margin:40px auto;color:#222}"
+            "table{width:100%;border-collapse:collapse;margin-top:16px}"
+            "th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #ddd}"
+            "th{color:#666;font-size:.85em;text-transform:uppercase}"
+            "</style></head><body>"
+            "<h1>Turnos por mes</h1>"
+            "<table><thead><tr><th>Mes</th><th>Turnos</th><th>Nuevos</th>"
+            f"<th>Recurrentes</th></tr></thead><tbody>{filas_html}</tbody></table>"
+            "</body></html>"
+        )
+
     return app

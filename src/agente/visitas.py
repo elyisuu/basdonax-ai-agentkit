@@ -97,3 +97,48 @@ def registrar_visita(
     except Exception as e:
         registro.warning("no se pudo registrar la visita de %s: %s", contacto_id, e)
         return False
+
+
+def resumen_mensual(dsn: str) -> list[dict]:
+    """Turnos por mes, separados en nuevos (la primera visita registrada de
+    esa persona) y recurrentes (ya tenía alguna antes) — ver AGENTS.md,
+    "Estadísticas para el dueño del negocio". El más reciente primero.
+
+    A diferencia de `registrar_visita()`, acá SÍ deja subir el error si la
+    conexión falla: no hay ninguna reserva real que proteger, así que
+    `/estadisticas` (web/webhook.py) puede mostrar el problema en vez de
+    una tabla vacía que parece "no tuviste turnos" sin serlo. Sin DSN,
+    devuelve una lista vacía sin más — no hay nada configurado que fallar.
+    """
+    if not dsn:
+        return []
+
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conexion:
+        filas = conexion.execute(
+            """
+            WITH numeradas AS (
+                SELECT
+                    fecha_turno,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY contacto_id
+                        ORDER BY fecha_turno, hora_turno, id
+                    ) AS numero_visita
+                FROM visitas
+            )
+            SELECT
+                to_char(fecha_turno, 'YYYY-MM') AS mes,
+                COUNT(*) AS turnos,
+                COUNT(*) FILTER (WHERE numero_visita = 1) AS nuevos,
+                COUNT(*) FILTER (WHERE numero_visita > 1) AS recurrentes
+            FROM numeradas
+            GROUP BY mes
+            ORDER BY mes DESC
+            """
+        ).fetchall()
+
+    return [
+        {"mes": mes, "turnos": turnos, "nuevos": nuevos, "recurrentes": recurrentes}
+        for mes, turnos, nuevos, recurrentes in filas
+    ]

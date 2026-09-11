@@ -17,18 +17,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from agente import visitas  # noqa: E402
 
 
+class _CursorDeMentira:
+    """Lo que devuelve `.execute(...)`: alcanza con `.fetchall()`."""
+
+    def __init__(self, filas: list[tuple]) -> None:
+        self._filas = filas
+
+    def fetchall(self):
+        return self._filas
+
+
 class _ConexionDeMentira:
     """Se hace pasar por una conexión de psycopg: `with psycopg.connect(...)`
-    entrega esto, y `.execute(sql, params)` anota lo que le pidieron."""
+    entrega esto, y `.execute(sql, params)` anota lo que le pidieron y
+    devuelve `filas_a_devolver` (para las consultas que hacen `.fetchall()`,
+    como `resumen_mensual`)."""
 
-    def __init__(self, rompe: bool = False) -> None:
+    def __init__(self, rompe: bool = False, filas_a_devolver: list[tuple] | None = None) -> None:
         self.ejecutados: list[tuple[str, tuple | None]] = []
         self._rompe = rompe
+        self._filas = filas_a_devolver or []
 
     def execute(self, sql, params=None):
         if self._rompe:
             raise RuntimeError("Postgres no contesta")
         self.ejecutados.append((sql, params))
+        return _CursorDeMentira(self._filas)
 
     def __enter__(self):
         return self
@@ -114,3 +128,47 @@ def test_registrar_si_la_conexion_falla_no_revienta(monkeypatch):
     ok = visitas.registrar_visita("dsn-falso", "7", "2026-09-14", "10:00")
 
     assert ok is False
+
+
+# -- El resumen mensual (para /estadisticas) -------------------------------------
+
+
+def test_resumen_sin_dsn_devuelve_lista_vacia():
+    assert visitas.resumen_mensual("") == []
+
+
+def test_resumen_arma_los_diccionarios_con_las_filas(monkeypatch):
+    conexion = _ConexionDeMentira(
+        filas_a_devolver=[
+            ("2026-09", 12, 5, 7),
+            ("2026-08", 8, 3, 5),
+        ]
+    )
+    _psycopg_falso(monkeypatch, conexion)
+
+    resumen = visitas.resumen_mensual("dsn-falso")
+
+    assert resumen == [
+        {"mes": "2026-09", "turnos": 12, "nuevos": 5, "recurrentes": 7},
+        {"mes": "2026-08", "turnos": 8, "nuevos": 3, "recurrentes": 5},
+    ]
+
+
+def test_resumen_sin_visitas_devuelve_lista_vacia(monkeypatch):
+    conexion = _ConexionDeMentira(filas_a_devolver=[])
+    _psycopg_falso(monkeypatch, conexion)
+
+    assert visitas.resumen_mensual("dsn-falso") == []
+
+
+def test_resumen_deja_subir_el_error_de_conexion(monkeypatch):
+    """A diferencia de registrar_visita: acá no hay una reserva real que
+    proteger, así que /estadisticas puede mostrar el problema."""
+    conexion = _ConexionDeMentira(rompe=True)
+    _psycopg_falso(monkeypatch, conexion)
+
+    try:
+        visitas.resumen_mensual("dsn-falso")
+        assert False, "tendría que haber subido la excepción"
+    except RuntimeError:
+        pass

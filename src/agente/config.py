@@ -131,6 +131,13 @@ class Config:
     # cada una hora no se salta ningún turno ni avisa el mismo dos veces.
     recordatorio_ventana_minutos: int = 60
 
+    # -- Estadísticas para el dueño del negocio: /estadisticas (web/webhook.py) --
+    # El secreto que protege ese link, mismo criterio que RESERVA_SECRETO:
+    # un token en la URL, sin pantalla de login. Generalo con:
+    #     python -c "import secrets; print(secrets.token_hex(24))"
+    # Sin esto puesto, /estadisticas da 404 — nadie puede verlas por accidente.
+    dashboard_secreto: str = ""
+
     @classmethod
     def desde_entorno(
         cls, proveedor: str | None = None, modelo: str | None = None
@@ -212,6 +219,7 @@ class Config:
             cancelacion_horas_minimas=_entero("CANCELACION_HORAS_MINIMAS", 0),
             recordatorio_horas_antes=_entero("RECORDATORIO_HORAS_ANTES", 24),
             recordatorio_ventana_minutos=_entero("RECORDATORIO_VENTANA_MINUTOS", 60),
+            dashboard_secreto=(os.getenv("DASHBOARD_SECRETO") or "").strip(),
         )
 
 

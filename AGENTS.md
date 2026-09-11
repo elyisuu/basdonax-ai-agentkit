@@ -644,6 +644,20 @@ y no rompe nada — mismo espíritu que `alertas.py`/`recordatorios.py`. Nunca
 revienta una reserva ni una aprobación: perder una estadística no puede
 voltear algo que ya pasó de verdad.
 
+**La pantalla: `GET /estadisticas?token=...`** (`web/webhook.py`) — turnos
+por mes, en una tabla HTML simple, sin JavaScript ni build. Mismo criterio
+de seguridad que `/reservas/{accion}`: un secreto fijo en la URL
+(`DASHBOARD_SECRETO`), no una pantalla de login — sin esa variable puesta,
+la ruta da 404 aunque alguien adivine cualquier token. `visitas.py:
+resumen_mensual()` arma la consulta (un `ROW_NUMBER()` por `contacto_id`:
+la primera visita de cada persona es "nueva", el resto "recurrente").
+
+A diferencia de `registrar_visita()`, acá un error de conexión **sí** se
+muestra tal cual en la página (500, con el error) en vez de tragarse
+silencioso: no hay ninguna reserva real en juego, así que mostrar el
+problema es mejor que una tabla vacía que parece decir "no tuviste
+turnos" sin serlo.
+
 ## Reintentos en Chatwoot y Google Calendar
 
 `reintentos.py` — un timeout de red pasajero (una conexión que se corta a
