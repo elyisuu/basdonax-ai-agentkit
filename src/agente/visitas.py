@@ -142,3 +142,50 @@ def resumen_mensual(dsn: str) -> list[dict]:
         {"mes": mes, "turnos": turnos, "nuevos": nuevos, "recurrentes": recurrentes}
         for mes, turnos, nuevos, recurrentes in filas
     ]
+
+
+def listar_visitas(dsn: str, limite: int = 200) -> list[dict]:
+    """El detalle turno por turno (quién, cuándo, primera vez o no) — para
+    la segunda tabla de `/estadisticas`, abajo del resumen mensual. La más
+    reciente primero.
+
+    `limite` para no mandar la tabla entera a una página HTML el día que
+    haya miles de filas — 200 alcanza de sobra para "¿quién vino esta
+    semana/mes?", que es para lo que sirve esta vista. Mismo criterio que
+    `resumen_mensual()`: sin DSN, lista vacía; con DSN pero sin conexión,
+    deja subir el error.
+    """
+    if not dsn:
+        return []
+
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conexion:
+        filas = conexion.execute(
+            """
+            SELECT
+                nombre,
+                telefono,
+                to_char(fecha_turno, 'YYYY-MM-DD') AS fecha,
+                hora_turno,
+                ROW_NUMBER() OVER (
+                    PARTITION BY contacto_id
+                    ORDER BY fecha_turno, hora_turno, id
+                ) = 1 AS es_nueva
+            FROM visitas
+            ORDER BY fecha_turno DESC, hora_turno DESC, id DESC
+            LIMIT %s
+            """,
+            (limite,),
+        ).fetchall()
+
+    return [
+        {
+            "nombre": nombre,
+            "telefono": telefono,
+            "fecha": fecha,
+            "hora": hora,
+            "es_nueva": es_nueva,
+        }
+        for nombre, telefono, fecha, hora, es_nueva in filas
+    ]

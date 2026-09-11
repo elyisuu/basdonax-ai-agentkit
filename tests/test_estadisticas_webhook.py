@@ -57,9 +57,16 @@ def test_sin_dashboard_secreto_configurado_da_404():
     assert respuesta.status_code == 404
 
 
+def _sin_detalle(monkeypatch):
+    """La mayoría de los tests de acá no les importa la tabla de detalle —
+    la dejan vacía para no tener que armarla cada vez."""
+    monkeypatch.setattr(webhook_modulo.visitas, "listar_visitas", lambda dsn: [])
+
+
 def test_con_token_correcto_y_sin_datos_lo_avisa(monkeypatch):
     web, _ = _armar()
     monkeypatch.setattr(webhook_modulo.visitas, "resumen_mensual", lambda dsn: [])
+    _sin_detalle(monkeypatch)
 
     with web as w:
         respuesta = w.get("/estadisticas?token=shhh-stats")
@@ -78,6 +85,7 @@ def test_con_token_correcto_muestra_las_filas(monkeypatch):
             {"mes": "2026-08", "turnos": 8, "nuevos": 3, "recurrentes": 5},
         ],
     )
+    _sin_detalle(monkeypatch)
 
     with web as w:
         respuesta = w.get("/estadisticas?token=shhh-stats")
@@ -100,3 +108,65 @@ def test_si_la_consulta_falla_muestra_el_error_en_vez_de_reventar(monkeypatch):
 
     assert respuesta.status_code == 500
     assert "RuntimeError" in respuesta.text
+
+
+def test_el_detalle_muestra_nombre_telefono_y_si_es_nueva(monkeypatch):
+    web, _ = _armar()
+    monkeypatch.setattr(webhook_modulo.visitas, "resumen_mensual", lambda dsn: [])
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "listar_visitas",
+        lambda dsn: [
+            {
+                "nombre": "Antonio",
+                "telefono": "+351964587322",
+                "fecha": "2026-09-14",
+                "hora": "09:00",
+                "es_nueva": True,
+            },
+            {
+                "nombre": "Ricardo",
+                "telefono": "",
+                "fecha": "2026-09-10",
+                "hora": "17:00",
+                "es_nueva": False,
+            },
+        ],
+    )
+
+    with web as w:
+        respuesta = w.get("/estadisticas?token=shhh-stats")
+
+    assert respuesta.status_code == 200
+    assert "Antonio" in respuesta.text
+    assert "+351964587322" in respuesta.text
+    assert "Nueva" in respuesta.text
+    assert "Recurrente" in respuesta.text
+    assert "Ricardo" in respuesta.text
+
+
+def test_un_nombre_con_html_no_se_ejecuta(monkeypatch):
+    """El nombre lo escribió la persona por chat — no es texto de confiar.
+    Sin escapar esto, un "nombre" tipo <script> quedaría corriendo en la
+    página que abre el dueño del negocio."""
+    web, _ = _armar()
+    monkeypatch.setattr(webhook_modulo.visitas, "resumen_mensual", lambda dsn: [])
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "listar_visitas",
+        lambda dsn: [
+            {
+                "nombre": "<script>alert(1)</script>",
+                "telefono": "",
+                "fecha": "2026-09-14",
+                "hora": "09:00",
+                "es_nueva": True,
+            }
+        ],
+    )
+
+    with web as w:
+        respuesta = w.get("/estadisticas?token=shhh-stats")
+
+    assert "<script>alert(1)</script>" not in respuesta.text
+    assert "&lt;script&gt;" in respuesta.text

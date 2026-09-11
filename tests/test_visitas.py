@@ -172,3 +172,49 @@ def test_resumen_deja_subir_el_error_de_conexion(monkeypatch):
         assert False, "tendría que haber subido la excepción"
     except RuntimeError:
         pass
+
+
+# -- El detalle turno por turno (para /estadisticas) -----------------------------
+
+
+def test_listar_sin_dsn_devuelve_lista_vacia():
+    assert visitas.listar_visitas("") == []
+
+
+def test_listar_arma_los_diccionarios_con_las_filas(monkeypatch):
+    conexion = _ConexionDeMentira(
+        filas_a_devolver=[
+            ("Ana", "+351900000000", "2026-09-14", "09:00", True),
+            ("Ana", "+351900000000", "2026-03-02", "10:00", False),
+        ]
+    )
+    _psycopg_falso(monkeypatch, conexion)
+
+    detalle = visitas.listar_visitas("dsn-falso")
+
+    assert detalle == [
+        {
+            "nombre": "Ana",
+            "telefono": "+351900000000",
+            "fecha": "2026-09-14",
+            "hora": "09:00",
+            "es_nueva": True,
+        },
+        {
+            "nombre": "Ana",
+            "telefono": "+351900000000",
+            "fecha": "2026-03-02",
+            "hora": "10:00",
+            "es_nueva": False,
+        },
+    ]
+
+
+def test_listar_manda_el_limite_a_la_consulta(monkeypatch):
+    conexion = _ConexionDeMentira()
+    _psycopg_falso(monkeypatch, conexion)
+
+    visitas.listar_visitas("dsn-falso", limite=50)
+
+    _, params = conexion.ejecutados[0]
+    assert params == (50,)

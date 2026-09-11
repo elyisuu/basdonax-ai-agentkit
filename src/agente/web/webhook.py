@@ -31,6 +31,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from html import escape
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -368,8 +369,9 @@ def crear_app(
 
     @app.get("/estadisticas")
     async def estadisticas(token: str = "") -> HTMLResponse:
-        """Turnos por mes para el dueño del negocio: nuevos vs. recurrentes
-        (ver AGENTS.md, "Estadísticas para el dueño del negocio"). Mismo
+        """Turnos por mes para el dueño del negocio: nuevos vs. recurrentes,
+        y abajo el detalle turno por turno — quién, cuándo, primera vez o
+        no (ver AGENTS.md, "Estadísticas para el dueño del negocio"). Mismo
         criterio de seguridad que /reservas/{accion}: un token fijo en la
         URL (DASHBOARD_SECRETO), sin pantalla de login que mantener.
         """
@@ -381,34 +383,56 @@ def crear_app(
 
         try:
             resumen = await asyncio.to_thread(visitas.resumen_mensual, config.postgres_dsn)
+            detalle = await asyncio.to_thread(visitas.listar_visitas, config.postgres_dsn)
         except Exception as e:
             registro.error("no se pudo armar /estadisticas: %s", e)
             return HTMLResponse(
-                f"<h1>No se pudo cargar</h1><p>{type(e).__name__}: {e}</p>",
+                f"<h1>No se pudo cargar</h1><p>{escape(f'{type(e).__name__}: {e}')}</p>",
                 status_code=500,
             )
 
         if not resumen:
-            filas_html = '<tr><td colspan="4">Todavía no hay turnos registrados.</td></tr>'
+            resumen_html = '<tr><td colspan="4">Todavía no hay turnos registrados.</td></tr>'
         else:
-            filas_html = "".join(
-                f"<tr><td>{f['mes']}</td><td>{f['turnos']}</td>"
+            resumen_html = "".join(
+                f"<tr><td>{escape(f['mes'])}</td><td>{f['turnos']}</td>"
                 f"<td>{f['nuevos']}</td><td>{f['recurrentes']}</td></tr>"
                 for f in resumen
+            )
+
+        if not detalle:
+            detalle_html = '<tr><td colspan="5">Todavía no hay turnos registrados.</td></tr>'
+        else:
+            # Un nombre o teléfono es texto que dijo la persona por chat —
+            # nunca confiar en que venga "limpio". escape() antes de
+            # meterlo en el HTML, mismo motivo que cualquier otro dato de
+            # afuera.
+            detalle_html = "".join(
+                f"<tr><td>{escape(v['nombre']) or '—'}</td>"
+                f"<td>{escape(v['telefono']) or '—'}</td>"
+                f"<td>{escape(v['fecha'])}</td><td>{escape(v['hora'])}</td>"
+                f"<td>{'Nueva' if v['es_nueva'] else 'Recurrente'}</td></tr>"
+                for v in detalle
             )
 
         return HTMLResponse(
             "<html><head><meta charset=\"utf-8\">"
             "<title>Estadísticas</title>"
             "<style>"
-            "body{font-family:sans-serif;max-width:640px;margin:40px auto;color:#222}"
+            "body{font-family:sans-serif;max-width:760px;margin:40px auto;color:#222}"
             "table{width:100%;border-collapse:collapse;margin-top:16px}"
             "th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #ddd}"
             "th{color:#666;font-size:.85em;text-transform:uppercase}"
+            "h2{margin-top:48px}"
             "</style></head><body>"
-            "<h1>Turnos por mes</h1>"
+            "<h1>Estadísticas</h1>"
+            "<h2>Turnos por mes</h2>"
             "<table><thead><tr><th>Mes</th><th>Turnos</th><th>Nuevos</th>"
-            f"<th>Recurrentes</th></tr></thead><tbody>{filas_html}</tbody></table>"
+            f"<th>Recurrentes</th></tr></thead><tbody>{resumen_html}</tbody></table>"
+            "<h2>Detalle (últimos turnos)</h2>"
+            "<table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Fecha</th>"
+            f"<th>Hora</th><th>Primera vez</th></tr></thead>"
+            f"<tbody>{detalle_html}</tbody></table>"
             "</body></html>"
         )
 
