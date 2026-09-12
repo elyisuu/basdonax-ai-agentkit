@@ -5,9 +5,21 @@
 No es un servidor: es un programa que corre, avisa lo que tenga que avisar,
 y termina. La idea es dejarlo programado para que se repita solo —una
 Scheduled Task de Coolify, un cron— cada tanto (por ejemplo, cada hora).
-Cada corrida barre el calendario buscando turnos que empiecen dentro de
-RECORDATORIO_HORAS_ANTES horas (± la ventana de RECORDATORIO_VENTANA_MINUTOS)
+Cada corrida barre el calendario buscando turnos que empiecen entre AHORA y
+RECORDATORIO_HORAS_ANTES horas (+ el margen de RECORDATORIO_VENTANA_MINUTOS)
 y le manda un WhatsApp a cada persona, si todavía no se le avisó.
+
+**Por qué desde AHORA y no una franja angosta alrededor de las 24hs.**
+Antes barría solo [ahora+24hs, ahora+25hs] — una franja del ancho exacto de
+la corrida, para que cada turno pasara por ahí una sola vez. El problema:
+con RESERVA_REQUIERE_APROBACION, un turno sigue "tentative" (deberia_avisar
+lo salta) hasta que el negocio lo aprueba a mano — si eso pasa DESPUÉS de
+que su franja de las 24hs ya quedó atrás, el turno nunca vuelve a caer en
+ninguna corrida futura y se queda sin recordatorio para siempre, en
+silencio. Reproducido en producción: dos turnos aprobados tarde, cero
+recordatorios. Barrer desde AHORA hace que cualquier turno recién
+confirmado (aunque sea con poca anticipación) se recupere en la corrida
+siguiente — peor un recordatorio tardío que ninguno.
 
 Necesita Google Calendar Y Chatwoot configurados: el calendario para saber
 qué turnos hay, Chatwoot para saber por dónde avisarle a cada uno. Sin
@@ -42,6 +54,7 @@ from agente.consola import preparar  # noqa: E402
 
 preparar()  # antes de imprimir nada, para que las tildes no rompan Windows
 
+from agente.agente import Agente  # noqa: E402
 from agente.calendario import (  # noqa: E402
     Calendario,
     conversacion_del_evento,
@@ -49,6 +62,7 @@ from agente.calendario import (  # noqa: E402
 )
 from agente.canales.chatwoot import Chatwoot  # noqa: E402
 from agente.config import Config  # noqa: E402
+from agente.mensajes import mensaje_en_idioma_de_conversacion  # noqa: E402
 
 AMBAR = "\033[38;5;214m"
 GRIS = "\033[90m"
@@ -109,16 +123,23 @@ def main() -> int:
 
     # Misma zona horaria para todos (viene del mismo config.zona_horaria):
     # cualquiera de las agendas sirve para calcular la ventana.
+    #
+    # Desde AHORA, no desde ahora+horas_antes: ver el docstring de arriba
+    # ("Por qué desde AHORA...") — así se recupera un turno que se aprobó
+    # tarde, con menos de RECORDATORIO_HORAS_ANTES de anticipación, en vez
+    # de perderlo para siempre porque su franja original ya pasó.
     ahora = datetime.now(calendarios[0].zona)
-    desde = ahora + timedelta(hours=config.recordatorio_horas_antes)
-    hasta = desde + timedelta(minutes=config.recordatorio_ventana_minutos)
+    hasta = ahora + timedelta(
+        hours=config.recordatorio_horas_antes,
+        minutes=config.recordatorio_ventana_minutos,
+    )
 
     # (calendario, evento) de a pares: marcar_recordado() tiene que ir a la
     # agenda correcta, no a la primera que haya.
     turnos: list[tuple[Calendario, dict]] = []
     try:
         for calendario in calendarios:
-            for evento in calendario.eventos_entre(desde, hasta):
+            for evento in calendario.eventos_entre(ahora, hasta):
                 turnos.append((calendario, evento))
     except Exception as e:
         print(f"{ROJO}No se pudo consultar el calendario: {type(e).__name__}: {e}{FIN}")
@@ -126,17 +147,32 @@ def main() -> int:
 
     avisados = 0
 
+    # Se arma solo si hace falta (recién adentro del loop, en el primer
+    # turno que de verdad hay que avisar) — la mayoría de las corridas no
+    # encuentran nada en la ventana, y esto abre una conexión a Postgres
+    # (la memoria del agente) que no vale la pena si no se va a usar.
+    agente: Agente | None = None
+
     for calendario, evento in turnos:
         if not deberia_avisar(evento):
             continue
 
         conversacion = conversacion_del_evento(evento)  # deberia_avisar() ya confirmó que no es None
         inicio = datetime.fromisoformat(evento["start"]["dateTime"]).astimezone(calendario.zona)
-        mensaje = (
+        mensaje_es = (
             f"¡Hola! Te recordamos tu turno para el {inicio.strftime('%d/%m')} "
-            f"a las {inicio.strftime('%H:%M')}. Si no podés venir, avisanos "
+            f"a las {inicio.strftime('%H:%M')}. Si no puedes venir, avísanos "
             "por acá."
         )
+
+        # Este aviso no pasa por ninguna conversación de chat — lo dispara
+        # el cron, no una pregunta que responder — así que sin esto
+        # siempre salía en español, sin importar en qué idioma venía
+        # hablando la persona (mismo bug que ya se encontró y arregló en
+        # web/webhook.py, ver mensajes.py). agente se arma una sola vez,
+        # acá, para todos los turnos de esta corrida.
+        agente = agente or Agente(config)
+        mensaje = mensaje_en_idioma_de_conversacion(agente, conversacion, mensaje_es)
 
         # Separado en dos try/except a propósito. Reproducido en producción:
         # el WhatsApp salía bien pero marcar_recordado() fallaba después (un

@@ -35,7 +35,6 @@ from html import escape
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from langchain_core.messages import HumanMessage, SystemMessage
 
 from .. import alertas, aprobacion, visitas
 from ..agente import Agente
@@ -44,6 +43,7 @@ from ..canales.buffer import BufferDeMensajes
 from ..canales.chatwoot import MENSAJE_ADJUNTO_SIN_TEXTO, Chatwoot
 from ..config import Config
 from ..memoria import verificar as verificar_memoria
+from ..mensajes import mensaje_en_idioma_de_conversacion as _mensaje_en_idioma_de_conversacion
 
 registro = logging.getLogger("agente.webhook")
 
@@ -330,58 +330,6 @@ def _calendario_para_aprobacion(
                 zona_horaria=config.zona_horaria,
             )
     return None
-
-
-def _mensaje_en_idioma_de_conversacion(
-    agente: Agente, conversacion: str, texto_es: str
-) -> str:
-    """Traduce un aviso fijo al idioma en que viene hablando esta conversación.
-
-    Los mensajes de /reservas/{accion} (confirmado, rechazado) no pasan por
-    el agente: no hay ninguna pregunta que responder, es un aviso que se
-    dispara solo al abrir el link. Si se mandaran tal cual, siempre saldrían
-    en el idioma en que está escrito el código (español), sin importar en
-    qué idioma venía hablando la persona — bug real, reproducido con una
-    conversación entera en portugués recibiendo el aviso de confirmación en
-    español.
-
-    Le pide al MISMO modelo que traduzca, mirando los últimos mensajes de la
-    persona para saber en qué idioma escribir — sin tocar la memoria de la
-    conversación (no pasa por agente.grafo/el checkpointer) ni las
-    herramientas (agente.modelo es el modelo sin bind_tools). Si algo falla
-    (sin internet, historial vacío), se manda el texto en español tal cual:
-    peor es no avisarle nada a la persona.
-    """
-    try:
-        ultimos = [
-            m.content
-            for m in agente.historial(conversacion)
-            if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content
-        ][-4:]
-        if not ultimos:
-            return texto_es
-
-        respuesta = agente.modelo.invoke(
-            [
-                SystemMessage(
-                    "Traducí el siguiente aviso al idioma en el que está "
-                    "escrita esta conversación (mirá los mensajes de abajo "
-                    "para saber cuál es). Si el idioma es español, usá "
-                    "español NEUTRO — sin voseo argentino (nunca 'vos', "
-                    "'tenés', 'andá') ni modismos de ningún país, como se "
-                    "entendería igual en cualquier país hispanohablante. "
-                    "Si ya está en ese idioma y ya es neutro, devolvelo tal "
-                    "cual. Respondé SOLO con el aviso traducido, sin "
-                    "comillas ni explicaciones.\n\n"
-                    "Mensajes de la conversación:\n" + "\n".join(ultimos)
-                ),
-                HumanMessage(texto_es),
-            ]
-        )
-        traducido = respuesta.content if isinstance(respuesta.content, str) else ""
-        return traducido.strip() or texto_es
-    except Exception:
-        return texto_es
 
 
 def crear_app(

@@ -39,13 +39,23 @@ distinto de un comentario o un docstring — eso lo lee quien mantiene el
 código (vos, otro dev), pero un mensaje como `MENSAJE_ERROR_GENERICO`
 (`web/webhook.py`) o el de rechazo de `/reservas/{accion}` lo lee un
 paciente en cualquier país hispanohablante, y "probá de nuevo" o
-"escribinos" suena raro fuera del Río de la Plata. Mismo criterio para
-`_mensaje_en_idioma_de_conversacion()` (`web/webhook.py`): cuando traduce
-un aviso fijo al idioma de la conversación, si ese idioma es español le
-pide al modelo neutro a propósito, no lo que salga. Encontrado el 12 sep
-2026 probando la demo en portugués: el aviso de error genérico le llegó a
-la clienta en español rioplatense en vez de portugués — dos bugs
-distintos (el idioma equivocado, y encima el registro equivocado).
+"escribinos" suena raro fuera del Río de la Plata. Mismo criterio para `mensaje_en_idioma_de_conversacion()` (`mensajes.py`):
+cuando traduce un aviso fijo al idioma de la conversación, si ese idioma
+es español le pide al modelo neutro a propósito, no lo que salga.
+Encontrado el 12 sep 2026 probando la demo en portugués: el aviso de
+error genérico le llegó a la clienta en español rioplatense en vez de
+portugués — dos bugs distintos (el idioma equivocado, y encima el
+registro equivocado).
+
+`mensajes.py` es compartido a propósito: lo usan `web/webhook.py`
+(`MENSAJE_ERROR_GENERICO`, los avisos de `/reservas/{accion}`) Y
+`recordatorios.py` (el recordatorio de turno) — los tres son avisos que
+se disparan SOLOS, sin que nadie le esté escribiendo al bot en ese
+momento, así que ninguno pasa por una conversación de chat de verdad. El
+mismo bug se encontró primero en el webhook y recién después en
+`recordatorios.py`, que se había quedado con el texto viejo — si aparece
+un cuarto lugar que manda un aviso fijo, va acá también, no copiado y
+pegado.
 
 ---
 
