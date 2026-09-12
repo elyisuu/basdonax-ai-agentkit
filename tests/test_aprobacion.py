@@ -57,3 +57,49 @@ def test_un_secreto_equivocado_no_sirve():
 def test_sin_secreto_o_sin_token_nunca_es_valido():
     assert aprobacion.valido("", "42", "evento-1", "cualquier-cosa") is False
     assert aprobacion.valido("secreto", "42", "evento-1", "") is False
+
+
+# -- Varios profesionales: el link también firma el profesional ---------------------
+#
+# Fase 4 (ver AGENTS.md, "Varios profesionales"): con PROFESIONALES
+# configurado, la ruta de aprobación necesita saber en qué agenda buscar el
+# evento — nadie puede tomar un link válido y cambiarle el profesional de
+# la URL para que apunte a otra agenda.
+
+
+def test_el_link_con_profesional_lo_suma_a_la_url():
+    url = aprobacion.link(
+        "https://negocio.com", "42", "evento-1", "secreto", "aprobar", "Dra. García"
+    )
+
+    assert "/reservas/aprobar/42/evento-1?token=" in url
+    assert "profesional=Dra" in url  # urllib.parse.quote codifica el resto
+
+
+def test_el_link_sin_profesional_no_suma_el_parametro():
+    """Un solo profesional (o ninguno): el link es idéntico al de siempre."""
+    url = aprobacion.link("https://negocio.com", "42", "evento-1", "secreto", "aprobar")
+
+    assert "profesional=" not in url
+
+
+def test_el_token_incluye_el_profesional_en_la_firma():
+    """El mismo secreto/conversación/evento, con otro profesional, firma
+    distinto — así no se puede cambiar el profesional en la URL de un link
+    ya emitido."""
+    token_garcia = aprobacion.firmar("secreto", "42", "evento-1", "Dra. García")
+    token_perez = aprobacion.firmar("secreto", "42", "evento-1", "Dr. Pérez")
+    token_legacy = aprobacion.firmar("secreto", "42", "evento-1")
+
+    assert token_garcia != token_perez != token_legacy
+
+
+def test_valido_exige_el_mismo_profesional_con_el_que_se_firmo():
+    token = aprobacion.firmar("secreto", "42", "evento-1", "Dra. García")
+
+    assert aprobacion.valido("secreto", "42", "evento-1", token, "Dra. García") is True
+    assert aprobacion.valido("secreto", "42", "evento-1", token, "Dr. Pérez") is False
+    assert aprobacion.valido("secreto", "42", "evento-1", token) is False, (
+        "sin profesional en la validación es un profesional distinto (vacío), "
+        "no tiene que colar"
+    )

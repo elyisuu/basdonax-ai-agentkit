@@ -12,6 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import recordatorios  # noqa: E402
+from agente.config import Config  # noqa: E402
 from recordatorios import conversacion_del_evento, deberia_avisar  # noqa: E402
 
 
@@ -60,3 +62,73 @@ def test_no_deberia_avisar_dos_veces():
 def test_no_deberia_avisar_sin_conversacion():
     """Un turno cargado a mano en Calendar, sin la línea que deja anotar_reserva()."""
     assert deberia_avisar(_evento(descripcion="Nombre: Juan")) is False
+
+
+# -- _calendarios: varios profesionales, cada uno con su propia agenda --------------
+#
+# Fase 3 (ver AGENTS.md, "Varios profesionales"): antes, este programa solo
+# barría GOOGLE_CALENDAR_ID. `Calendario` de verdad necesita una clave RSA
+# real en credencial_json (firma el JWT al construirse) — se reemplaza acá
+# por una clase de mentira que solo anota con qué se la construyó, mismo
+# criterio que _construir_calendario en test_herramientas.py.
+
+
+class _CalendarioDeMentira:
+    def __init__(self, calendario_id, credencial_json, zona_horaria) -> None:
+        self.calendario_id = calendario_id
+        self.credencial_json = credencial_json
+        self.zona_horaria = zona_horaria
+
+
+def _config(**cambios) -> Config:
+    """Un Config real, con los campos obligatorios (los del modelo, que acá
+    no importan para nada) rellenados con cualquier cosa."""
+    return Config(
+        proveedor="claude",
+        modelo="modelo-de-prueba",
+        api_key="no-hace-falta",
+        max_tokens=1024,
+        memoria_mensajes=20,
+        prompt_sistema=Path("prompts/sistema.md"),
+        **cambios,
+    )
+
+
+def test_calendarios_sin_credencial_da_lista_vacia(monkeypatch):
+    monkeypatch.setattr(recordatorios, "Calendario", _CalendarioDeMentira)
+    config = _config(google_calendar_id="abc", google_service_account_json="")
+
+    assert recordatorios._calendarios(config) == []
+
+
+def test_calendarios_sin_profesionales_ni_calendar_id_da_lista_vacia(monkeypatch):
+    monkeypatch.setattr(recordatorios, "Calendario", _CalendarioDeMentira)
+    config = _config(google_service_account_json="cuenta-de-mentira")
+
+    assert recordatorios._calendarios(config) == []
+
+
+def test_calendarios_sin_profesionales_usa_google_calendar_id(monkeypatch):
+    monkeypatch.setattr(recordatorios, "Calendario", _CalendarioDeMentira)
+    config = _config(
+        google_calendar_id="abc@group.calendar.google.com",
+        google_service_account_json="cuenta-de-mentira",
+    )
+
+    resultado = recordatorios._calendarios(config)
+
+    assert [c.calendario_id for c in resultado] == ["abc@group.calendar.google.com"]
+
+
+def test_calendarios_con_profesionales_arma_uno_por_cada_agenda(monkeypatch):
+    monkeypatch.setattr(recordatorios, "Calendario", _CalendarioDeMentira)
+    config = _config(
+        profesionales={"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"},
+        google_service_account_json="cuenta-de-mentira",
+        zona_horaria="Europe/Lisbon",
+    )
+
+    resultado = recordatorios._calendarios(config)
+
+    assert [c.calendario_id for c in resultado] == ["cal-garcia", "cal-perez"]
+    assert all(c.zona_horaria == "Europe/Lisbon" for c in resultado)

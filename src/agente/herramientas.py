@@ -395,7 +395,7 @@ def anotar_reserva(
             if evento_pendiente_id:
                 etiqueta = ETIQUETA_RESERVA_PENDIENTE
                 nota += "\n\n" + _aviso_de_aprobacion(
-                    ajustes, conversacion, evento_pendiente_id
+                    ajustes, conversacion, evento_pendiente_id, profesional
                 )
 
             try:
@@ -442,17 +442,19 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
     llamar a esta herramienta. Solo funciona con Google Calendar conectado:
     es ahí donde se busca el turno, y solo cancela el que corresponda a
     ESTA conversación (no el de otra persona que caiga en la misma fecha y
-    hora). Si el negocio pide un mínimo de anticipación
-    (CANCELACION_HORAS_MINIMAS) y el turno es antes de eso, no cancela —
-    le decís a la persona que hable directo con el negocio.
+    hora). Si el negocio tiene más de un profesional, no hace falta
+    aclarar con cuál era el turno — se busca en todas las agendas solo. Si
+    el negocio pide un mínimo de anticipación (CANCELACION_HORAS_MINIMAS)
+    y el turno es antes de eso, no cancela — le decís a la persona que
+    hable directo con el negocio.
 
     Args:
         fecha: La fecha original de la reserva, en formato AAAA-MM-DD.
         hora: La hora original, en formato HH:MM (24 horas).
     """
     ajustes = _ajustes_del_config(config)
-    calendario = _calendario_del_config(config)
-    if calendario is None:
+    calendarios = _calendarios_de(config)
+    if not calendarios:
         return (
             "No puedo cancelar reservas en este canal: hace falta tener "
             "Google Calendar configurado."
@@ -461,18 +463,17 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
     conversacion = _conversacion_de(config)
 
     try:
-        inicio, _ = calendario.rango(fecha, hora, 1)
-        evento = calendario.evento_en(inicio)
+        calendario, evento, mensaje_ajena = _buscar_mi_turno(
+            calendarios, conversacion, fecha, hora
+        )
+        if mensaje_ajena:
+            return mensaje_ajena
         if evento is None:
             return (
                 f"No encontré ninguna reserva para el {fecha} a las {hora}. "
                 "Puede que ya se haya cancelado, o que el dato esté mal —"
                 " confirmá la fecha y hora con la persona."
             )
-
-        mensaje_ajena = _chequear_propietario(evento, conversacion, fecha, hora)
-        if mensaje_ajena:
-            return mensaje_ajena
 
         mensaje_anticipacion = _chequear_anticipacion(evento, ajustes)
         if mensaje_anticipacion:
@@ -507,9 +508,12 @@ def reprogramar_mi_reserva(
     hacerle preguntar dos veces. Solo funciona con Google Calendar
     conectado, y solo mueve el turno que corresponda a ESTA conversación
     (no el de otra persona que caiga en la misma fecha y hora). Si el
-    negocio pide un mínimo de anticipación (CANCELACION_HORAS_MINIMAS) y
-    el turno actual es antes de eso, no lo mueve — le decís a la persona
-    que hable directo con el negocio.
+    negocio tiene más de un profesional, no hace falta aclarar con cuál
+    era el turno — se busca en todas las agendas solo, y se reprograma con
+    el mismo profesional de siempre. Si el negocio pide un mínimo de
+    anticipación (CANCELACION_HORAS_MINIMAS) y el turno actual es antes de
+    eso, no lo mueve — le decís a la persona que hable directo con el
+    negocio.
 
     Args:
         fecha_actual: La fecha con la que se anotó la reserva, AAAA-MM-DD.
@@ -518,8 +522,8 @@ def reprogramar_mi_reserva(
         hora_nueva: La hora nueva pedida, HH:MM (24 horas).
     """
     ajustes = _ajustes_del_config(config)
-    calendario = _calendario_del_config(config)
-    if calendario is None:
+    calendarios = _calendarios_de(config)
+    if not calendarios:
         return (
             "No puedo reprogramar reservas en este canal: hace falta tener "
             "Google Calendar configurado."
@@ -528,17 +532,16 @@ def reprogramar_mi_reserva(
     conversacion = _conversacion_de(config)
 
     try:
-        inicio_actual, _ = calendario.rango(fecha_actual, hora_actual, 1)
-        evento = calendario.evento_en(inicio_actual)
+        calendario, evento, mensaje_ajena = _buscar_mi_turno(
+            calendarios, conversacion, fecha_actual, hora_actual
+        )
+        if mensaje_ajena:
+            return mensaje_ajena
         if evento is None:
             return (
                 f"No encontré ninguna reserva para el {fecha_actual} a las "
                 f"{hora_actual}. Confirmá la fecha y hora con la persona."
             )
-
-        mensaje_ajena = _chequear_propietario(evento, conversacion, fecha_actual, hora_actual)
-        if mensaje_ajena:
-            return mensaje_ajena
 
         mensaje_anticipacion = _chequear_anticipacion(evento, ajustes)
         if mensaje_anticipacion:
@@ -950,12 +953,19 @@ def _ajustes_del_config(config: RunnableConfig) -> Config:
     return Config.desde_entorno()
 
 
-def _aviso_de_aprobacion(ajustes: Config, conversacion: str, evento_id: str) -> str:
+def _aviso_de_aprobacion(
+    ajustes: Config, conversacion: str, evento_id: str, profesional: str = ""
+) -> str:
     """El texto que se suma a la nota de Chatwoot de una reserva "tentative".
 
     Con URL_PUBLICA y RESERVA_SECRETO puestos, son dos links de un clic. Sin
     eso, avisamos igual — la reserva ya está tomada en el calendario, pero
     aprobarla hay que hacerlo directo desde Google Calendar.
+
+    `profesional` viaja en el link (ver aprobacion.link): con varios
+    profesionales configurados, la ruta de aprobación en web/webhook.py lo
+    necesita para saber en qué agenda buscar el evento — vacío si el
+    negocio tiene uno solo, mismo link de siempre.
     """
     if not ajustes.url_publica or not ajustes.reserva_secreto:
         return (
@@ -966,10 +976,20 @@ def _aviso_de_aprobacion(ajustes: Config, conversacion: str, evento_id: str) -> 
         )
 
     aprobar = aprobacion.link(
-        ajustes.url_publica, conversacion, evento_id, ajustes.reserva_secreto, "aprobar"
+        ajustes.url_publica,
+        conversacion,
+        evento_id,
+        ajustes.reserva_secreto,
+        "aprobar",
+        profesional,
     )
     rechazar = aprobacion.link(
-        ajustes.url_publica, conversacion, evento_id, ajustes.reserva_secreto, "rechazar"
+        ajustes.url_publica,
+        conversacion,
+        evento_id,
+        ajustes.reserva_secreto,
+        "rechazar",
+        profesional,
     )
     return f"Aprobar: {aprobar}\nRechazar: {rechazar}"
 
@@ -993,14 +1013,14 @@ def _calendario_del_config(config: RunnableConfig) -> Calendario | None:
 
 # -- Varios profesionales, cada uno con su propia agenda ----------------------
 #
-# Fase 1 (ver AGENTS.md, "Varios profesionales"): anotar_reserva y
-# franjas_ocupadas ya distinguen entre profesionales. cancelar_mi_reserva y
-# reprogramar_mi_reserva TODAVÍA NO — siguen usando _calendario_del_config()
-# (un solo calendario, el de GOOGLE_CALENDAR_ID), así que en un negocio con
-# PROFESIONALES cargado esas dos herramientas quedan sin calendario hasta la
-# Fase 2. No es un olvido: cancelar/reprogramar necesitan poder buscar en
-# TODAS las agendas a la vez (la persona no siempre se acuerda con quién
-# había reservado), que es más trabajo que sumar un parámetro.
+# Ver AGENTS.md, "Varios profesionales", para el panorama completo (las
+# cuatro fases). anotar_reserva y franjas_ocupadas reciben `profesional` y
+# usan _calendario_de() — UNA agenda puntual, la que el modelo eligió.
+# cancelar_mi_reserva y reprogramar_mi_reserva usan en cambio
+# _calendarios_de() + _buscar_mi_turno(): TODAS las agendas a la vez,
+# porque la persona no siempre se acuerda con qué profesional había
+# reservado — no hace falta preguntarle, la propia conversación identifica
+# cuál es su turno (ver _chequear_propietario).
 
 
 def _profesionales_disponibles(ajustes: Config) -> str:
@@ -1084,6 +1104,81 @@ def _construir_calendario(calendar_id: str, ajustes: Config) -> Calendario:
         credencial_json=ajustes.google_service_account_json,
         zona_horaria=ajustes.zona_horaria,
     )
+
+
+def _calendarios_de(config: RunnableConfig) -> list[Calendario]:
+    """Todas las agendas a revisar para encontrar "mi turno" — a diferencia
+    de `_calendario_de()` (UNA agenda puntual, la de un `profesional` que
+    ya se sabe), esto es para `cancelar_mi_reserva`/`reprogramar_mi_reserva`:
+    la persona no siempre se acuerda con qué profesional había quedado, así
+    que en vez de preguntarle se busca en TODAS las agendas configuradas.
+
+    Con un solo profesional (o ninguno), es una lista de a lo sumo un
+    elemento — el mismo `Calendario` que devuelve `_calendario_del_config()`,
+    así que el comportamiento de siempre no cambia un bit.
+    """
+    ajustes = _ajustes_del_config(config)
+
+    if not ajustes.profesionales:
+        calendario = _calendario_del_config(config)
+        return [calendario] if calendario is not None else []
+
+    if not ajustes.google_service_account_json:
+        return []
+
+    return [
+        _construir_calendario(calendar_id, ajustes)
+        for calendar_id in ajustes.profesionales.values()
+    ]
+
+
+def _buscar_mi_turno(
+    calendarios: list[Calendario], conversacion: str, fecha: str, hora: str
+) -> tuple[Calendario | None, dict | None, str | None]:
+    """Busca, en todas las `calendarios`, el turno de esta conversación
+    para (fecha, hora).
+
+    Devuelve `(calendario, evento, None)` cuando encuentra uno usable —
+    propio, o sin dueño registrado (mismo criterio que
+    `_chequear_propietario`: turnos de antes de esta protección, o cargados
+    a mano en Calendar, se dejan pasar). Si no hay ninguno usable, devuelve
+    `(None, None, mensaje)`, con el mensaje ya armado para el modelo — y
+    distingue dos casos: "no hay ningún turno ahí en ninguna agenda" (mensaje
+    None: el llamador arma el "no encontré", que en cancelar_mi_reserva y
+    reprogramar_mi_reserva trae variables de nombre distinto) de "hay un
+    turno ahí, pero es de otra conversación" (mensaje ya armado, igual al
+    que devolvía `_chequear_propietario`).
+
+    Un match propio siempre gana. Si no aparece ninguno, un turno sin dueño
+    en cualquier agenda es la siguiente opción. Solo si ninguna de las dos
+    aparece se usa un turno ajeno (encontrado en alguna agenda) para armar
+    el mensaje de "no es tuyo" — así, si un profesional tiene ese horario
+    libre y otro tiene ahí el turno de otra persona, no se bloquea al que
+    sí busca el suyo.
+    """
+    sin_dueno: tuple[Calendario, dict] | None = None
+    mensaje_ajeno: str | None = None
+
+    for calendario in calendarios:
+        inicio, _ = calendario.rango(fecha, hora, 1)
+        evento = calendario.evento_en(inicio)
+        if evento is None:
+            continue
+
+        mensaje = _chequear_propietario(evento, conversacion, fecha, hora)
+        if mensaje is None:
+            propietario = conversacion_del_evento(evento)
+            if conversacion and propietario == conversacion:
+                return calendario, evento, None
+            if sin_dueno is None:
+                sin_dueno = (calendario, evento)
+        elif mensaje_ajeno is None:
+            mensaje_ajeno = mensaje
+
+    if sin_dueno is not None:
+        return sin_dueno[0], sin_dueno[1], None
+
+    return None, None, mensaje_ajeno
 
 
 # -- Las consultas ------------------------------------------------------------

@@ -282,6 +282,42 @@ def _registrar_visita_aprobada(
         registro.warning("[%s] no se pudo registrar la visita: %s", conversacion, e)
 
 
+def _calendario_para_aprobacion(
+    config: Config, calendario_legacy: Calendario | None, profesional: str
+) -> Calendario | None:
+    """El Calendario correcto para UN link de /reservas/{accion} puntual.
+
+    Con un solo profesional (o ninguno, el caso de siempre): el mismo
+    `calendario_legacy` armado una sola vez al arrancar la app (ver
+    crear_app) — ni este link ni ningún otro necesitan más que ese.
+
+    Con PROFESIONALES configurado, `calendario_legacy` no sirve (puede ni
+    existir, si el negocio no puso GOOGLE_CALENDAR_ID): se arma un
+    Calendario nuevo, puntual para este pedido, según a qué profesional
+    apunte el link — el mismo nombre que anotar_reserva usó para armarlo
+    (ver herramientas.py, `_aviso_de_aprobacion`). Sin importar mayúsculas
+    ni espacios de más, mismo criterio que herramientas._buscar_calendar_id
+    (funciones separadas a propósito: esta es la única pieza de esa lógica
+    que necesita el servidor web, y evita importar algo privado de
+    herramientas.py).
+    """
+    if not config.profesionales:
+        return calendario_legacy
+
+    if not config.google_service_account_json:
+        return None
+
+    objetivo = profesional.strip().lower()
+    for nombre, calendar_id in config.profesionales.items():
+        if nombre.strip().lower() == objetivo:
+            return Calendario(
+                calendario_id=calendar_id,
+                credencial_json=config.google_service_account_json,
+                zona_horaria=config.zona_horaria,
+            )
+    return None
+
+
 def crear_app(
     config: Config | None = None,
     agente: Agente | None = None,
@@ -304,8 +340,11 @@ def crear_app(
     )
 
     # Solo para /reservas/{accion}: aprobar o rechazar una reserva
-    # "tentative". Si el negocio no conectó calendario, queda None y esas
-    # rutas avisan que no hay nada que aprobar, en vez de fallar.
+    # "tentative". Si el negocio no conectó calendario (ni tiene
+    # PROFESIONALES), queda None y esas rutas avisan que no hay nada que
+    # aprobar, en vez de fallar. Con varios profesionales, este NO es el
+    # calendario a usar — _calendario_para_aprobacion() arma uno puntual
+    # por pedido, según qué profesional venga en el link (ver más abajo).
     if calendario is None and config.google_calendar_id and config.google_service_account_json:
         calendario = Calendario(
             calendario_id=config.google_calendar_id,
@@ -468,7 +507,11 @@ def crear_app(
 
     @app.get("/reservas/{accion}/{conversacion}/{evento_id}")
     async def reserva_pendiente(
-        accion: str, conversacion: str, evento_id: str, token: str = ""
+        accion: str,
+        conversacion: str,
+        evento_id: str,
+        token: str = "",
+        profesional: str = "",
     ) -> HTMLResponse:
         """El link que alguien del negocio abre desde el celular para
         aprobar o rechazar una reserva "tentative" (RESERVA_REQUIERE_APROBACION).
@@ -476,6 +519,12 @@ def crear_app(
         Es HTML y no JSON a propósito: esto lo abre una persona en el
         navegador, no un programa. No hay login — la seguridad es el token
         de la URL, mismo criterio que /chatwoot/<token> (ver aprobacion.py).
+
+        `profesional` (query param, vacío con un solo profesional) dice en
+        qué agenda buscar el evento cuando el negocio tiene varios — lo
+        pone `anotar_reserva` al armar el link (ver herramientas.py,
+        `_aviso_de_aprobacion`) y la firma del token lo incluye, así que no
+        se puede cambiar en la URL sin invalidar el link.
 
         **Es un GET que ejecuta una acción — a propósito, para que sea un
         link de un solo clic sin formulario ni JS — pero eso lo hace
@@ -492,15 +541,26 @@ def crear_app(
         if accion not in aprobacion.ACCIONES:
             return HTMLResponse("Acción desconocida.", status_code=404)
 
-        if calendario is None or not config.reserva_secreto:
+        if not config.reserva_secreto:
             return HTMLResponse(
                 "Este negocio no tiene la aprobación por link configurada "
-                "(faltan GOOGLE_CALENDAR_ID/GOOGLE_SERVICE_ACCOUNT_JSON o "
-                "RESERVA_SECRETO en el .env).",
+                "(falta RESERVA_SECRETO en el .env).",
                 status_code=404,
             )
 
-        if not aprobacion.valido(config.reserva_secreto, conversacion, evento_id, token):
+        agenda = _calendario_para_aprobacion(config, calendario, profesional)
+        if agenda is None:
+            return HTMLResponse(
+                "Este negocio no tiene la aprobación por link configurada "
+                "para esta reserva (faltan GOOGLE_CALENDAR_ID/"
+                "GOOGLE_SERVICE_ACCOUNT_JSON en el .env, o el profesional "
+                "del link no coincide con ninguno de PROFESIONALES).",
+                status_code=404,
+            )
+
+        if not aprobacion.valido(
+            config.reserva_secreto, conversacion, evento_id, token, profesional
+        ):
             return HTMLResponse("Link inválido o vencido.", status_code=403)
 
         try:
@@ -510,7 +570,7 @@ def crear_app(
             # la acción. Cualquier otro código sí es un error de verdad y
             # sube tal cual al except de abajo.
             try:
-                evento = await asyncio.to_thread(calendario.obtener_evento, evento_id)
+                evento = await asyncio.to_thread(agenda.obtener_evento, evento_id)
             except ErrorDeCalendario as e:
                 if e.codigo not in (404, 410):
                     raise
@@ -522,7 +582,7 @@ def crear_app(
                 elif evento.get("status") == "confirmed":
                     mensaje = "Esta reserva ya estaba aprobada. No hace falta hacer nada más."
                 else:
-                    await asyncio.to_thread(calendario.aprobar_evento, evento_id)
+                    await asyncio.to_thread(agenda.aprobar_evento, evento_id)
                     await asyncio.to_thread(
                         canal.enviar,
                         conversacion,
@@ -539,7 +599,7 @@ def crear_app(
                 if evento is None:
                     mensaje = "Esta reserva ya había sido rechazada antes."
                 else:
-                    await asyncio.to_thread(calendario.cancelar_evento, evento_id)
+                    await asyncio.to_thread(agenda.cancelar_evento, evento_id)
                     await asyncio.to_thread(
                         canal.enviar,
                         conversacion,

@@ -1344,6 +1344,190 @@ def test_reprogramar_mi_reserva_con_el_horario_nuevo_ocupado(monkeypatch):
     assert len(cal.eventos) == 1
 
 
+# -- Varios profesionales: cancelar/reprogramar buscan en TODAS las agendas ----------
+#
+# Fase 2 (ver AGENTS.md, "Varios profesionales"). _calendarios_de() y
+# _buscar_mi_turno() son las piezas nuevas; cancelar_mi_reserva y
+# reprogramar_mi_reserva no reciben `profesional` — la propia conversación
+# identifica cuál es el turno, sin preguntar.
+
+
+def test_calendarios_de_sin_profesionales_delega_en_calendario_del_config(monkeypatch):
+    cal = _CalendarioDeMentira()
+    monkeypatch.setattr(herramientas, "_ajustes_del_config", lambda config: _AjustesDeMentira())
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+
+    assert herramientas._calendarios_de(_config()) == [cal]
+
+
+def test_calendarios_de_sin_profesionales_ni_calendario_da_lista_vacia(monkeypatch):
+    monkeypatch.setattr(herramientas, "_ajustes_del_config", lambda config: _AjustesDeMentira())
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: None)
+
+    assert herramientas._calendarios_de(_config()) == []
+
+
+def test_calendarios_de_con_profesionales_arma_uno_por_cada_agenda(monkeypatch):
+    ajustes = _AjustesDeMentira(
+        profesionales={"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+    )
+    monkeypatch.setattr(herramientas, "_ajustes_del_config", lambda config: ajustes)
+    calendarios_por_id = {"cal-garcia": _CalendarioDeMentira(), "cal-perez": _CalendarioDeMentira()}
+    monkeypatch.setattr(
+        herramientas,
+        "_construir_calendario",
+        lambda calendar_id, ajustes: calendarios_por_id[calendar_id],
+    )
+
+    resultado = herramientas._calendarios_de(_config())
+
+    assert resultado == [calendarios_por_id["cal-garcia"], calendarios_por_id["cal-perez"]]
+
+
+def test_calendarios_de_con_profesionales_sin_credencial_da_lista_vacia(monkeypatch):
+    ajustes = _AjustesDeMentira(
+        profesionales={"Dra. García": "cal-garcia"}, google_service_account_json=""
+    )
+    monkeypatch.setattr(herramientas, "_ajustes_del_config", lambda config: ajustes)
+
+    assert herramientas._calendarios_de(_config()) == []
+
+
+def test_buscar_mi_turno_lo_encuentra_en_la_segunda_agenda():
+    """La persona no siempre se acuerda con qué profesional había
+    quedado — no hace falta que lo diga, se busca en todas."""
+    vacia = _CalendarioDeMentira()
+    con_el_turno = _CalendarioDeMentira()
+    inicio, fin = con_el_turno.rango("2026-09-12", "20:00", 60)
+    con_el_turno.crear_evento("Juan (2p)", "Nombre: Juan\nConversación: 42", inicio, fin)
+
+    calendario, evento, mensaje = herramientas._buscar_mi_turno(
+        [vacia, con_el_turno], "42", "2026-09-12", "20:00"
+    )
+
+    assert calendario is con_el_turno
+    assert evento is not None
+    assert mensaje is None
+
+
+def test_buscar_mi_turno_prioriza_el_propio_sobre_uno_sin_dueno():
+    sin_dueno = _CalendarioDeMentira()
+    inicio, fin = sin_dueno.rango("2026-09-12", "20:00", 60)
+    sin_dueno.crear_evento("Ana (1p)", "Nombre: Ana", inicio, fin)  # sin "Conversación:"
+
+    propio = _CalendarioDeMentira()
+    inicio, fin = propio.rango("2026-09-12", "20:00", 60)
+    propio.crear_evento("Juan (2p)", "Nombre: Juan\nConversación: 42", inicio, fin)
+
+    calendario, evento, mensaje = herramientas._buscar_mi_turno(
+        [sin_dueno, propio], "42", "2026-09-12", "20:00"
+    )
+
+    assert calendario is propio
+    assert mensaje is None
+
+
+def test_buscar_mi_turno_sin_match_propio_usa_el_sin_dueno():
+    sin_dueno = _CalendarioDeMentira()
+    inicio, fin = sin_dueno.rango("2026-09-12", "20:00", 60)
+    sin_dueno.crear_evento("Ana (1p)", "Nombre: Ana", inicio, fin)
+
+    calendario, evento, mensaje = herramientas._buscar_mi_turno(
+        [sin_dueno], "42", "2026-09-12", "20:00"
+    )
+
+    assert calendario is sin_dueno
+    assert evento is not None
+    assert mensaje is None
+
+
+def test_buscar_mi_turno_solo_ajeno_avisa_que_no_es_tuyo():
+    ajena = _CalendarioDeMentira()
+    inicio, fin = ajena.rango("2026-09-12", "20:00", 60)
+    ajena.crear_evento("Ana (1p)", "Nombre: Ana\nConversación: 99", inicio, fin)
+
+    calendario, evento, mensaje = herramientas._buscar_mi_turno(
+        [ajena], "42", "2026-09-12", "20:00"
+    )
+
+    assert calendario is None
+    assert evento is None
+    assert mensaje is not None
+    assert "no está anotado en esta conversación" in mensaje.lower()
+
+
+def test_buscar_mi_turno_nada_en_ninguna_agenda():
+    vacia_1 = _CalendarioDeMentira()
+    vacia_2 = _CalendarioDeMentira()
+
+    calendario, evento, mensaje = herramientas._buscar_mi_turno(
+        [vacia_1, vacia_2], "42", "2026-09-12", "20:00"
+    )
+
+    assert calendario is None
+    assert evento is None
+    assert mensaje is None
+
+
+def test_cancelar_mi_reserva_busca_en_todas_las_agendas(monkeypatch):
+    otra_agenda = _CalendarioDeMentira()
+    la_agenda_correcta = _CalendarioDeMentira()
+    inicio, fin = la_agenda_correcta.rango("2026-09-12", "20:00", 60)
+    la_agenda_correcta.crear_evento("Juan (2p)", "Nombre: Juan\nConversación: 42", inicio, fin)
+
+    monkeypatch.setattr(
+        herramientas, "_calendarios_de", lambda config: [otra_agenda, la_agenda_correcta]
+    )
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "cancelé" in resultado.lower()
+    assert la_agenda_correcta.cancelados == ["evento-1"]
+    assert otra_agenda.cancelados == [], "no se toca la agenda donde no estaba el turno"
+
+
+def test_cancelar_mi_reserva_sin_ninguna_agenda(monkeypatch):
+    monkeypatch.setattr(herramientas, "_calendarios_de", lambda config: [])
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "calendar" in resultado.lower()
+
+
+def test_reprogramar_mi_reserva_busca_en_todas_las_agendas(monkeypatch):
+    otra_agenda = _CalendarioDeMentira(libre=True)
+    la_agenda_correcta = _CalendarioDeMentira(libre=True)
+    inicio, fin = la_agenda_correcta.rango("2026-09-12", "20:00", 90)
+    la_agenda_correcta.crear_evento(
+        "Juan (2p)", "Nombre: Juan\nPersonas: 2\nConversación: 42", inicio, fin, estado="confirmed"
+    )
+
+    monkeypatch.setattr(
+        herramientas, "_calendarios_de", lambda config: [otra_agenda, la_agenda_correcta]
+    )
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    assert "moví" in resultado.lower()
+    assert la_agenda_correcta.cancelados == ["evento-1"]
+    assert len(la_agenda_correcta.eventos) == 1, "el turno nuevo se creó en la MISMA agenda"
+    assert otra_agenda.eventos == [], "la otra agenda no se toca para nada"
+
+
 # -- Lista de espera ----------------------------------------------------------------
 
 

@@ -493,21 +493,37 @@ pantalla para editarla — pero eso es un proyecto aparte.
   busca el `calendar_id` del nombre pedido y arma un `Calendario` para esa
   agenda puntual.
 
-**Alcance de esta primera fase — lo que todavía NO soporta varios
-profesionales:**
+Las cuatro fases del plan ya están completas:
 
-- `cancelar_mi_reserva` / `reprogramar_mi_reserva` siguen mirando una sola
-  agenda. Con varios profesionales configurados, un cliente que quiere
-  cancelar tendría que decir con quién había quedado — todavía no se le
-  pregunta ni se busca en todas las agendas. Próxima fase.
-- `recordatorios.py` (el escaneo periódico que avisa turnos del día
-  siguiente) sigue mirando una sola agenda.
-- Los links de aprobación manual (`/reservas/{accion}`, Nivel 1.5) no
-  saben todavía a qué profesional pertenece el turno que se está
-  aprobando o rechazando.
+- **Fase 1** — `anotar_reserva` y `franjas_ocupadas` reciben `profesional`
+  y usan `_error_profesional()` + `_calendario_de()` (arriba).
+- **Fase 2** — `cancelar_mi_reserva` y `reprogramar_mi_reserva` NO reciben
+  `profesional`: la persona no siempre se acuerda con quién había
+  quedado, así que en vez de preguntarle, `herramientas._calendarios_de()`
+  arma la lista de TODAS las agendas y `herramientas._buscar_mi_turno()`
+  busca en todas el turno de esta conversación (mismo criterio de
+  propiedad que `_chequear_propietario`: un match propio gana, uno sin
+  dueño registrado es la siguiente opción, y solo si no hay ninguno de los
+  dos se usa un turno ajeno para el mensaje de "no es tuyo" — así un
+  profesional con el horario libre y otro con el turno de otra persona no
+  bloquea al que sí busca el suyo).
+- **Fase 3** — `recordatorios.py` tiene su propia `_calendarios(config)`
+  (mismo criterio que la de herramientas.py, pero sin pasar por
+  `RunnableConfig`: este programa no corre dentro del grafo) y barre todas
+  las agendas, guardando `(calendario, evento)` de a pares para que
+  `marcar_recordado()` vaya siempre a la agenda correcta.
+- **Fase 4** — los links de `/reservas/{accion}` (Nivel 1.5) llevan un
+  query param `profesional` (vacío con un solo profesional) que
+  `herramientas._aviso_de_aprobacion()` completa al armarlos, y la firma
+  HMAC de `aprobacion.firmar()`/`aprobacion.valido()` lo incluye — nadie
+  puede cambiar el profesional en la URL de un link ya emitido sin
+  invalidar el token. `web/webhook.py` resuelve la agenda de cada pedido
+  puntual con `_calendario_para_aprobacion()` (no con el `Calendario`
+  legacy armado una sola vez al arrancar la app, que solo sirve para el
+  modo de un profesional).
 
-No agregues nada de esto sin que te lo pidan — son las próximas fases del
-mismo plan, no bugs de esta.
+No hay ninguna fase pendiente de este plan — lo próximo que toque acá es
+lo que surja de usarlo con un cliente real de varios profesionales.
 
 ## Reserva con aprobación manual (Nivel 1.5)
 

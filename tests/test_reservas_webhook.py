@@ -308,3 +308,136 @@ def test_campo_de_descripcion_encuentra_la_linea():
 
 def test_campo_de_descripcion_vacio_si_no_esta():
     assert webhook_modulo._campo_de_descripcion("Nombre: Ana", "Teléfono") == ""
+
+
+# -- Varios profesionales: _calendario_para_aprobacion ---------------------------
+#
+# Fase 4 (ver AGENTS.md, "Varios profesionales"). `Calendario` de verdad
+# necesita una clave RSA real en credencial_json — se reemplaza acá por una
+# clase de mentira que solo anota con qué se la construyó, mismo criterio
+# que test_recordatorios.py y _construir_calendario en test_herramientas.py.
+
+
+class _CalendarioConstruido:
+    def __init__(self, calendario_id, credencial_json, zona_horaria) -> None:
+        self.calendario_id = calendario_id
+        self.credencial_json = credencial_json
+        self.zona_horaria = zona_horaria
+
+
+def test_calendario_para_aprobacion_sin_profesionales_usa_el_legacy(monkeypatch):
+    legacy = object()
+    config = agente_falso(["no debería usarse"]).config
+
+    assert webhook_modulo._calendario_para_aprobacion(config, legacy, "") is legacy
+
+
+def test_calendario_para_aprobacion_con_profesionales_arma_el_de_ese_nombre(monkeypatch):
+    monkeypatch.setattr(webhook_modulo, "Calendario", _CalendarioConstruido)
+    agente = agente_falso(["no debería usarse"])
+    agente.config.profesionales = {"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+    agente.config.google_service_account_json = "cuenta-de-mentira"
+
+    resultado = webhook_modulo._calendario_para_aprobacion(
+        agente.config, None, "dra. garcía"  # sin importar mayúsculas ni espacios
+    )
+
+    assert isinstance(resultado, _CalendarioConstruido)
+    assert resultado.calendario_id == "cal-garcia"
+
+
+def test_calendario_para_aprobacion_con_profesionales_y_nombre_que_no_coincide():
+    agente = agente_falso(["no debería usarse"])
+    agente.config.profesionales = {"Dra. García": "cal-garcia"}
+    agente.config.google_service_account_json = "cuenta-de-mentira"
+
+    assert webhook_modulo._calendario_para_aprobacion(agente.config, None, "Dr. Nadie") is None
+
+
+def test_calendario_para_aprobacion_con_profesionales_sin_credencial():
+    agente = agente_falso(["no debería usarse"])
+    agente.config.profesionales = {"Dra. García": "cal-garcia"}
+    agente.config.google_service_account_json = ""
+
+    assert webhook_modulo._calendario_para_aprobacion(agente.config, None, "Dra. García") is None
+
+
+# -- Varios profesionales: la ruta entera, con la agenda correcta según el link ------
+
+
+def test_aprobar_con_profesional_usa_la_agenda_correcta(monkeypatch):
+    canal = ChatwootFalso()
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    agente.config.profesionales = {"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+
+    cal_garcia = _CalendarioDeMentira()
+    cal_perez = _CalendarioDeMentira()
+    monkeypatch.setattr(
+        webhook_modulo,
+        "_calendario_para_aprobacion",
+        lambda config, legacy, profesional: {
+            "Dra. García": cal_garcia,
+            "Dr. Pérez": cal_perez,
+        }.get(profesional),
+    )
+
+    web = cliente(canal, agente, calendario=None)
+    token = aprobacion.firmar("shhh", "42", "evento-1", "Dra. García")
+
+    with web as w:
+        respuesta = w.get(
+            f"/reservas/aprobar/42/evento-1?token={token}&profesional=Dra.%20Garc%C3%ADa"
+        )
+
+    assert respuesta.status_code == 200
+    assert cal_garcia.aprobados == ["evento-1"]
+    assert cal_perez.aprobados == [], "no se toca la agenda del otro profesional"
+
+
+def test_aprobar_con_profesional_equivocado_en_la_url_da_403(monkeypatch):
+    """El profesional viaja en la firma: cambiarlo en la URL invalida el token."""
+    canal = ChatwootFalso()
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    agente.config.profesionales = {"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+
+    cal_garcia = _CalendarioDeMentira()
+    cal_perez = _CalendarioDeMentira()
+    monkeypatch.setattr(
+        webhook_modulo,
+        "_calendario_para_aprobacion",
+        lambda config, legacy, profesional: {
+            "Dra. García": cal_garcia,
+            "Dr. Pérez": cal_perez,
+        }.get(profesional),
+    )
+
+    web = cliente(canal, agente, calendario=None)
+    # Firmado para la Dra. García, pero la URL pide con el Dr. Pérez.
+    token = aprobacion.firmar("shhh", "42", "evento-1", "Dra. García")
+
+    with web as w:
+        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}&profesional=Dr.%20P%C3%A9rez")
+
+    assert respuesta.status_code == 403
+    assert cal_perez.aprobados == []
+
+
+def test_aprobar_con_profesionales_y_nombre_que_no_coincide_da_404(monkeypatch):
+    canal = ChatwootFalso()
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    agente.config.profesionales = {"Dra. García": "cal-garcia"}
+
+    monkeypatch.setattr(
+        webhook_modulo, "_calendario_para_aprobacion", lambda config, legacy, profesional: None
+    )
+
+    web = cliente(canal, agente, calendario=None)
+    token = aprobacion.firmar("shhh", "42", "evento-1", "Dr. Nadie")
+
+    with web as w:
+        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}&profesional=Dr.%20Nadie")
+
+    assert respuesta.status_code == 404

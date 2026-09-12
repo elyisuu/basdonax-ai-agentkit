@@ -23,6 +23,11 @@ avisarle a nadie, y se lo salta.
 Cómo evita avisar dos veces: no hay ninguna base de datos para esto. Cuando
 se manda un recordatorio, se marca el evento mismo (extendedProperties,
 invisible para quien lo mira en Calendar) — ver calendario.ya_recordado().
+
+Con varios profesionales (PROFESIONALES, ver AGENTS.md → "Varios
+profesionales"): barre TODAS las agendas, una por profesional, no una
+sola — a la persona le llega el mismo recordatorio sin importar con cuál
+profesional haya quedado.
 """
 
 from __future__ import annotations
@@ -51,10 +56,44 @@ ROJO = "\033[91m"
 FIN = "\033[0m"
 
 
+def _calendarios(config: Config) -> list[Calendario]:
+    """Todas las agendas a barrer.
+
+    Un solo profesional (o ninguno, el caso de siempre): la única de
+    GOOGLE_CALENDAR_ID, en una lista de a lo sumo un elemento. Con
+    PROFESIONALES configurado (ver AGENTS.md → "Varios profesionales"):
+    una por cada uno — nadie queda afuera del barrido solo porque su turno
+    esté en la agenda de otro profesional.
+    """
+    if not config.google_service_account_json:
+        return []
+
+    if not config.profesionales:
+        if not config.google_calendar_id:
+            return []
+        return [
+            Calendario(
+                calendario_id=config.google_calendar_id,
+                credencial_json=config.google_service_account_json,
+                zona_horaria=config.zona_horaria,
+            )
+        ]
+
+    return [
+        Calendario(
+            calendario_id=calendar_id,
+            credencial_json=config.google_service_account_json,
+            zona_horaria=config.zona_horaria,
+        )
+        for calendar_id in config.profesionales.values()
+    ]
+
+
 def main() -> int:
     config = Config.desde_entorno()
 
-    if not config.google_calendar_id or not config.google_service_account_json:
+    calendarios = _calendarios(config)
+    if not calendarios:
         print(f"{GRIS}Sin Google Calendar configurado: no hay nada que recordar.{FIN}")
         return 0
 
@@ -62,30 +101,32 @@ def main() -> int:
         print(f"{GRIS}Sin Chatwoot configurado: no hay por dónde avisar.{FIN}")
         return 0
 
-    calendario = Calendario(
-        calendario_id=config.google_calendar_id,
-        credencial_json=config.google_service_account_json,
-        zona_horaria=config.zona_horaria,
-    )
     chatwoot = Chatwoot(
         url=config.chatwoot_url,
         token=config.chatwoot_token,
         cuenta_id=config.chatwoot_cuenta_id,
     )
 
-    ahora = datetime.now(calendario.zona)
+    # Misma zona horaria para todos (viene del mismo config.zona_horaria):
+    # cualquiera de las agendas sirve para calcular la ventana.
+    ahora = datetime.now(calendarios[0].zona)
     desde = ahora + timedelta(hours=config.recordatorio_horas_antes)
     hasta = desde + timedelta(minutes=config.recordatorio_ventana_minutos)
 
+    # (calendario, evento) de a pares: marcar_recordado() tiene que ir a la
+    # agenda correcta, no a la primera que haya.
+    turnos: list[tuple[Calendario, dict]] = []
     try:
-        eventos = calendario.eventos_entre(desde, hasta)
+        for calendario in calendarios:
+            for evento in calendario.eventos_entre(desde, hasta):
+                turnos.append((calendario, evento))
     except Exception as e:
         print(f"{ROJO}No se pudo consultar el calendario: {type(e).__name__}: {e}{FIN}")
         return 1
 
     avisados = 0
 
-    for evento in eventos:
+    for calendario, evento in turnos:
         if not deberia_avisar(evento):
             continue
 
@@ -129,7 +170,7 @@ def main() -> int:
         avisados += 1
         print(f"{AMBAR}[{conversacion}]{FIN} avisado — {inicio.strftime('%d/%m %H:%M')}")
 
-    print(f"{GRIS}{avisados} de {len(eventos)} turno(s) en la ventana.{FIN}")
+    print(f"{GRIS}{avisados} de {len(turnos)} turno(s) en la ventana.{FIN}")
     return 0
 
 
