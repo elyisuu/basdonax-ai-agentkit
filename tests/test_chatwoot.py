@@ -738,7 +738,14 @@ def test_el_error_que_ve_la_persona_no_es_el_crudo():
 
 
 def test_una_falla_dispara_una_alerta(monkeypatch):
-    """El dueño del bot se tiene que enterar antes que el cliente le avise."""
+    """El dueño del bot se tiene que enterar antes que el cliente le avise.
+
+    Acá el modelo falso no tiene ninguna respuesta cargada (agente_falso([])),
+    así que revienta dos veces en la misma vuelta: una vez para la
+    respuesta normal, y otra al intentar traducir MENSAJE_ERROR_GENERICO
+    (mensajes.py) — mismo modelo roto, misma falla. Dos alertas por una
+    sola falla real no es un bug: la segunda confirma, además, que ni
+    siquiera el aviso traducido le llegó a la persona."""
     from test_agente import agente_falso
 
     avisos = []
@@ -755,9 +762,8 @@ def test_una_falla_dispara_una_alerta(monkeypatch):
     with cliente(canal, agente) as web:
         web.post("/chatwoot/secreto", json=evento("hola"))
 
-    assert len(avisos) == 1
-    assert avisos[0][0] == "token-de-prueba"
-    assert avisos[0][1] == "123"
+    assert len(avisos) == 2
+    assert all(aviso[0] == "token-de-prueba" and aviso[1] == "123" for aviso in avisos)
 
 
 def test_el_salud_contesta():

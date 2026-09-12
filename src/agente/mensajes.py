@@ -13,9 +13,14 @@ código (español), sin importar en qué idioma venía la conversación.
 
 from __future__ import annotations
 
+import logging
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from . import alertas
 from .agente import Agente
+
+registro = logging.getLogger("agente.mensajes")
 
 
 def mensaje_en_idioma_de_conversacion(
@@ -31,8 +36,13 @@ def mensaje_en_idioma_de_conversacion(
     un cliente final de cualquier país no tiene por qué entender voseo
     argentino, que es la convención del resto del código de este repo.
 
-    Si algo falla (sin internet, historial vacío), se manda el texto en
-    español tal cual: peor es no avisarle nada a la persona.
+    Si algo falla (sin internet, el modelo no contesta), se manda el
+    texto en español tal cual: peor es no avisarle nada a la persona. PERO
+    a diferencia de otros "nunca revienta" del proyecto, esto SÍ loguea y
+    avisa por Telegram (mismo mecanismo que alertas.py) — encontrado en
+    vivo el 12 sep 2026: sin este aviso, una traducción que falla es
+    indistinguible de una conversación que nunca dijo nada en otro
+    idioma, y no hay forma de saber después por qué salió en español.
     """
     try:
         ultimos = [
@@ -41,6 +51,11 @@ def mensaje_en_idioma_de_conversacion(
             if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content
         ][-4:]
         if not ultimos:
+            registro.info(
+                "[%s] mensaje_en_idioma_de_conversacion: sin historial, "
+                "se manda el texto en español tal cual",
+                conversacion,
+            )
             return texto_es
 
         respuesta = agente.modelo.invoke(
@@ -61,6 +76,29 @@ def mensaje_en_idioma_de_conversacion(
             ]
         )
         traducido = respuesta.content if isinstance(respuesta.content, str) else ""
+        if not traducido.strip():
+            registro.warning(
+                "[%s] mensaje_en_idioma_de_conversacion: el modelo devolvió "
+                "una traducción vacía, se manda el texto en español tal cual",
+                conversacion,
+            )
         return traducido.strip() or texto_es
-    except Exception:
+    except Exception as e:
+        detalle = f"{type(e).__name__}: {e}"
+        registro.warning(
+            "[%s] mensaje_en_idioma_de_conversacion falló, se manda el "
+            "texto en español tal cual: %s",
+            conversacion,
+            detalle,
+        )
+        try:
+            alertas.avisar(
+                agente.config.alerta_telegram_token,
+                agente.config.alerta_telegram_chat_id,
+                "traduccion_aviso_fijo",
+                f"[agente-whatsapp] no se pudo traducir un aviso fijo "
+                f"(conversación {conversacion}), salió en español: {detalle}",
+            )
+        except Exception:
+            pass  # la alerta es un extra — que no salga no puede tapar el aviso real
         return texto_es
