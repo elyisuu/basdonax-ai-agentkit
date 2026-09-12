@@ -189,7 +189,7 @@ ETIQUETA_LISTA_ESPERA = "lista-espera"
 
 
 @tool
-def franjas_ocupadas(fecha: str, config: RunnableConfig) -> str:
+def franjas_ocupadas(fecha: str, config: RunnableConfig, profesional: str = "") -> str:
     """Lista los horarios ya ocupados del calendario, para una fecha.
 
     Llamala ANTES de anotar_reserva cuando el negocio tenga un calendario
@@ -202,14 +202,21 @@ def franjas_ocupadas(fecha: str, config: RunnableConfig) -> str:
         fecha: La fecha a consultar, en formato AAAA-MM-DD (por ejemplo
             "2026-09-13"). Convertí "el sábado" o "mañana" a esta forma
             usando la fecha de hoy que tenés en el mensaje de sistema.
+        profesional: Con qué profesional — mismo criterio que en
+            anotar_reserva: solo hace falta si el negocio tiene más de
+            uno. Vacío si tiene uno solo (o ninguno).
     """
     ajustes = _ajustes_del_config(config)
+
+    error_profesional = _error_profesional(ajustes, profesional)
+    if error_profesional:
+        return error_profesional
 
     try:
         if horario.dia_cerrado(fecha, ajustes.dias_cerrados):
             return f"El {fecha} el negocio está cerrado — no ofrezcas ese día."
 
-        calendario = _calendario_del_config(config)
+        calendario = _calendario_de(config, profesional)
         if calendario is None:
             return "Este negocio no tiene un calendario conectado."
         ocupado = calendario.ocupado(fecha)
@@ -250,6 +257,7 @@ def anotar_reserva(
     telefono: str = "",
     aclaracion: str = "",
     duracion_minutos: int = 60,
+    profesional: str = "",
 ) -> str:
     """Guarda un turno o una reserva.
 
@@ -277,8 +285,18 @@ def anotar_reserva(
         aclaracion: Algo para tener en cuenta (una alergia, un cumpleaños,
             un pedido especial). Opcional.
         duracion_minutos: Cuánto dura el turno. Si no te dijeron nada, 60.
+        profesional: Con qué profesional es el turno. SOLO hace falta si
+            el negocio tiene más de uno — en ese caso, preguntale a la
+            persona antes de llamar a esta herramienta (los nombres
+            disponibles están en tu propio mensaje de sistema). Con un
+            solo profesional (o ninguno) dejalo vacío, no hace falta
+            preguntar nada.
     """
     ajustes = _ajustes_del_config(config)
+
+    error_profesional = _error_profesional(ajustes, profesional)
+    if error_profesional:
+        return error_profesional
 
     try:
         horario.validar(
@@ -334,7 +352,7 @@ def anotar_reserva(
     evento_pendiente_id: str | None = None
 
     try:
-        calendario = _calendario_del_config(config)
+        calendario = _calendario_de(config, profesional)
         if calendario is not None:
             inicio, fin = calendario.rango(fecha, hora, duracion_minutos)
 
@@ -968,6 +986,101 @@ def _calendario_del_config(config: RunnableConfig) -> Calendario | None:
 
     return Calendario(
         calendario_id=ajustes.google_calendar_id,
+        credencial_json=ajustes.google_service_account_json,
+        zona_horaria=ajustes.zona_horaria,
+    )
+
+
+# -- Varios profesionales, cada uno con su propia agenda ----------------------
+#
+# Fase 1 (ver AGENTS.md, "Varios profesionales"): anotar_reserva y
+# franjas_ocupadas ya distinguen entre profesionales. cancelar_mi_reserva y
+# reprogramar_mi_reserva TODAVÍA NO — siguen usando _calendario_del_config()
+# (un solo calendario, el de GOOGLE_CALENDAR_ID), así que en un negocio con
+# PROFESIONALES cargado esas dos herramientas quedan sin calendario hasta la
+# Fase 2. No es un olvido: cancelar/reprogramar necesitan poder buscar en
+# TODAS las agendas a la vez (la persona no siempre se acuerda con quién
+# había reservado), que es más trabajo que sumar un parámetro.
+
+
+def _profesionales_disponibles(ajustes: Config) -> str:
+    """Los nombres, para el mensaje que le pide al modelo elegir uno."""
+    return ", ".join(ajustes.profesionales.keys())
+
+
+def _buscar_calendar_id(profesionales: dict[str, str], profesional: str) -> str | None:
+    """Busca el nombre sin importar mayúsculas ni espacios de más — el
+    modelo transcribe lo que dijo la persona, no necesariamente calcado a
+    como está escrito en PROFESIONALES."""
+    objetivo = profesional.strip().lower()
+    for nombre, calendar_id in profesionales.items():
+        if nombre.strip().lower() == objetivo:
+            return calendar_id
+    return None
+
+
+def _error_profesional(ajustes: Config, profesional: str) -> str | None:
+    """Si hay que frenar ACÁ por el profesional, el mensaje para el
+    modelo — None si está todo bien para seguir.
+
+    Dos casos que frenan: el negocio tiene varios profesionales y no se
+    especificó ninguno, o se especificó uno que no coincide con ningún
+    nombre configurado. Con un solo profesional (o ninguno) nunca frena:
+    ese es el modo de siempre, profesional no se usa para nada.
+    """
+    if not ajustes.profesionales:
+        return None
+
+    if not profesional:
+        return (
+            "Antes de seguir, preguntale con qué profesional quiere el "
+            f"turno. Los que atiende este negocio son: "
+            f"{_profesionales_disponibles(ajustes)}."
+        )
+
+    if _buscar_calendar_id(ajustes.profesionales, profesional) is None:
+        return (
+            f'No tengo ningún profesional que se llame "{profesional}" — '
+            f"los que atiende este negocio son: "
+            f"{_profesionales_disponibles(ajustes)}. Confirmá el nombre "
+            "con la persona."
+        )
+
+    return None
+
+
+def _calendario_de(config: RunnableConfig, profesional: str) -> Calendario | None:
+    """El Calendario correcto: el del profesional pedido, si el negocio
+    tiene varios (PROFESIONALES); el único que haya, si no — delegando en
+    ese caso a `_calendario_del_config()` (mismo resultado de siempre, y
+    los tests que la reemplazan por un calendario de mentira siguen
+    andando sin tocarlos).
+
+    Llamar a `_error_profesional()` ANTES de esto (ver anotar_reserva/
+    franjas_ocupadas): ahí se distingue "no hay ningún calendario" de
+    "hay varios y falta elegir uno", que acá ya no se puede diferenciar
+    — los dos casos devuelven None.
+    """
+    ajustes = _ajustes_del_config(config)
+
+    if not ajustes.profesionales:
+        return _calendario_del_config(config)
+
+    calendar_id = _buscar_calendar_id(ajustes.profesionales, profesional)
+    if calendar_id is None or not ajustes.google_service_account_json:
+        return None
+
+    return _construir_calendario(calendar_id, ajustes)
+
+
+def _construir_calendario(calendar_id: str, ajustes: Config) -> Calendario:
+    """El punto único donde `_calendario_de()` arma un `Calendario` de
+    verdad — separado para que los tests lo puedan reemplazar por uno de
+    mentira sin necesitar una clave RSA real en
+    GOOGLE_SERVICE_ACCOUNT_JSON (mismo problema que evita
+    `_calendario_del_config()` al dejarse reemplazar entera)."""
+    return Calendario(
+        calendario_id=calendar_id,
         credencial_json=ajustes.google_service_account_json,
         zona_horaria=ajustes.zona_horaria,
     )

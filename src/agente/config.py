@@ -6,7 +6,7 @@ Todo sale del archivo .env. Nada de credenciales escritas en el código.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -83,10 +83,22 @@ class Config:
     # -- Google Calendar: solo lo mira anotar_reserva() (herramientas.py) ---
     # El ID del calendario que compartió el negocio con la cuenta de
     # servicio (Configuración del calendario → Integrar calendario).
+    # Se ignora si PROFESIONALES tiene algo cargado (ver más abajo): un
+    # negocio con varios profesionales no tiene "el" calendario, tiene uno
+    # por persona.
     google_calendar_id: str = ""
     # El JSON entero de la cuenta de servicio, en una sola línea. Ver el
-    # paso a paso en AGENTS.md.
+    # paso a paso en AGENTS.md. Se comparte entre todos los profesionales
+    # de PROFESIONALES: es una sola cuenta de servicio por negocio, no una
+    # por persona — cada profesional solo comparte SU calendario con ese
+    # mismo email.
     google_service_account_json: str = ""
+
+    # Para un negocio con más de un profesional atendiendo, cada uno con
+    # su propia agenda: "Nombre:calendar_id,Nombre2:calendar_id2". Vacío
+    # (el default) = modo de siempre, un solo profesional/calendario vía
+    # GOOGLE_CALENDAR_ID — ver AGENTS.md, "Varios profesionales".
+    profesionales: dict[str, str] = field(default_factory=dict)
 
     # -- Aprobación manual de la reserva, con calendario conectado ----------
     # Con esto en true, anotar_reserva() no confirma el turno de una: lo
@@ -207,6 +219,7 @@ class Config:
             google_service_account_json=(
                 os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
             ).strip(),
+            profesionales=_profesionales_de(os.getenv("PROFESIONALES") or ""),
             reserva_requiere_aprobacion=_booleano(
                 "RESERVA_REQUIERE_APROBACION", False
             ),
@@ -316,3 +329,26 @@ def _booleano(nombre: str, por_defecto: bool) -> bool:
     if not valor:
         return por_defecto
     return valor in ("1", "true", "si", "sí", "on", "yes")
+
+
+def _profesionales_de(texto: str) -> dict[str, str]:
+    """"Nombre:calendar_id,Nombre2:calendar_id2" -> {"Nombre": "calendar_id", ...}
+
+    Vacío (incluido el caso de no tener nada puesto) = sin varios
+    profesionales — herramientas.py cae al modo de siempre, un solo
+    calendario vía GOOGLE_CALENDAR_ID. Una parte sin ":" se ignora en vez
+    de romper el arranque entero por un typo en una sola entrada.
+    """
+    profesionales: dict[str, str] = {}
+    for parte in (texto or "").split(","):
+        parte = parte.strip()
+        if not parte:
+            continue
+        nombre, separador, calendar_id = parte.partition(":")
+        if not separador:
+            continue
+        nombre = nombre.strip()
+        calendar_id = calendar_id.strip()
+        if nombre and calendar_id:
+            profesionales[nombre] = calendar_id
+    return profesionales

@@ -186,6 +186,16 @@ class Agente:
             self.config.zona_horaria
         )
 
+        # Los nombres de los profesionales, no en prompts/sistema.md: ese
+        # archivo lo edita a mano el negocio, y esto tiene que estar SIEMPRE
+        # igual a lo que dice PROFESIONALES en el .env — si alguien agrega o
+        # saca un profesional ahí y el prompt queda desactualizado, el
+        # modelo ofrece o rechaza gente que ya no corresponde. Vacío si el
+        # negocio tiene un solo profesional (o ninguno): ahí no hace falta
+        # preguntar con quién (ver herramientas.py, anotar_reserva).
+        if self.config.profesionales:
+            texto += "\n" + _lista_profesionales(self.config.profesionales)
+
         if self.config.cache and self.config.proveedor == "claude":
             return SystemMessage(
                 content=[
@@ -308,6 +318,14 @@ def _fecha_de_hoy(zona_horaria: str) -> str:
         f"(Hoy es {_DIAS[ahora.weekday()]} {ahora.strftime('%Y-%m-%d')}, "
         f"son las {ahora.strftime('%H:%M')}, zona horaria {zona_horaria}.)"
     )
+
+
+def _lista_profesionales(profesionales: dict[str, str]) -> str:
+    """Los nombres, para que el modelo sepa a quién puede ofrecer u
+    ofrecerle a elegir — ver anotar_reserva/franjas_ocupadas
+    (herramientas.py), que rechazan un nombre que no esté en esta lista."""
+    nombres = ", ".join(profesionales.keys())
+    return f"(Este negocio tiene más de un profesional atendiendo: {nombres}.)"
 
 
 def _recortar(mensajes: list, tope: int) -> list:

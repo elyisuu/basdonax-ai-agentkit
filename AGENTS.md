@@ -441,6 +441,71 @@ Google" — pero es un proyecto aparte, no algo para hacer de entrada.
   confirmó, un fallo al avisar en Chatwoot no tira abajo el turno. Sin
   ninguno de los dos, avisa que no puede tomar la reserva en ese canal.
 
+## Varios profesionales (una agenda por persona)
+
+Un negocio con más de un profesional atendiendo (varios fisios, por
+ejemplo) necesita una agenda de Google Calendar por persona, no una
+compartida — si no, `anotar_reserva` no sabría en qué agenda mirar
+disponibilidad real ni dónde crear el evento.
+
+**Configuración, en el `.env`:**
+
+```
+PROFESIONALES="Dra. García:abc@group.calendar.google.com,Dr. Pérez:xyz@group.calendar.google.com"
+```
+
+Nombre y `calendar_id` separados por `:`, cada profesional separado por
+`,`. Vacío (el default) = modo de un solo profesional, con
+`GOOGLE_CALENDAR_ID` como siempre — **cero cambio de comportamiento** para
+los clientes que ya tienen esto configurado así.
+
+**Por qué en el `.env` y no en una tabla de Postgres:** para arrancar, el
+número de profesionales de un negocio cambia poco (se decide una vez, por
+teléfono con el dueño) y no hace falta que el propio negocio lo edite
+solo. Si en algún momento el dueño necesita agregar o sacar un profesional
+sin pedirte que le toques el `.env`, ahí sí conviene una tabla y una
+pantalla para editarla — pero eso es un proyecto aparte.
+
+**Qué hace cada pieza:**
+
+- `config._profesionales_de(texto)` parsea el `.env` a un diccionario
+  `{nombre: calendar_id}`. Una entrada sin `:` se ignora sin tirar abajo
+  el arranque completo (un typo en un profesional no puede dejar sin
+  servicio a los demás).
+- `Agente._sistema()` le agrega al prompt, solo cuando `profesionales` no
+  está vacío, la lista de nombres disponibles — así el modelo sabe a
+  quién puede ofrecer u ofrecerle a elegir. No está a mano en
+  `prompts/sistema.md` a propósito: si viviera ahí, el negocio y el
+  prompt podrían desincronizarse (agregás un profesional al `.env` y te
+  olvidás de tocar el prompt).
+- `herramientas._error_profesional()` es el chequeo que usan
+  `anotar_reserva` y `franjas_ocupadas`: si hay más de un profesional
+  configurado y el modelo no mandó `profesional` (o mandó uno que no
+  existe), devuelve un mensaje pidiendo que se aclare — no revienta ni
+  adivina con cuál agenda trabajar.
+- `herramientas._calendario_de(config, profesional)` resuelve cuál
+  `Calendario` usar. En modo de un solo profesional delega en
+  `_calendario_del_config(config)`, la función que ya existía — así todos
+  los tests y el comportamiento de siempre no se tocan. En modo de varios,
+  busca el `calendar_id` del nombre pedido y arma un `Calendario` para esa
+  agenda puntual.
+
+**Alcance de esta primera fase — lo que todavía NO soporta varios
+profesionales:**
+
+- `cancelar_mi_reserva` / `reprogramar_mi_reserva` siguen mirando una sola
+  agenda. Con varios profesionales configurados, un cliente que quiere
+  cancelar tendría que decir con quién había quedado — todavía no se le
+  pregunta ni se busca en todas las agendas. Próxima fase.
+- `recordatorios.py` (el escaneo periódico que avisa turnos del día
+  siguiente) sigue mirando una sola agenda.
+- Los links de aprobación manual (`/reservas/{accion}`, Nivel 1.5) no
+  saben todavía a qué profesional pertenece el turno que se está
+  aprobando o rechazando.
+
+No agregues nada de esto sin que te lo pidan — son las próximas fases del
+mismo plan, no bugs de esta.
+
 ## Reserva con aprobación manual (Nivel 1.5)
 
 Algunos negocios no quieren que el agente confirme solo, ni que la reserva

@@ -375,3 +375,40 @@ def test_la_transmision_se_puede_leer_dos_veces():
     assert primero == "hola que tal"
     assert segundo == "hola que tal", "la segunda lectura no puede venir vacía"
     assert t.resumen.texto == "hola que tal", "el resumen no se tiene que pisar"
+
+
+# -- Varios profesionales en el prompt de sistema --------------------------------
+
+
+def _texto_del_sistema(mensaje) -> str:
+    """El contenido del SystemMessage, sea string suelto o el bloque con
+    cache_control (ver AGENTS.md: "El caché de Claude es un bloque, no un
+    string")."""
+    if isinstance(mensaje.content, str):
+        return mensaje.content
+    return mensaje.content[0]["text"]
+
+
+def test_sin_profesionales_configurados_no_aparece_nada_en_el_prompt():
+    """"profesional" a secas ya sale en el prompt base (alcance clínico:
+    "cede un profesional en la consulta, no vos") — lo que no debe aparecer
+    sin PROFESIONALES configurado es la lista en sí."""
+    a = agente_falso(["hola"])
+    assert a.config.profesionales == {}
+
+    texto = _texto_del_sistema(a._sistema())
+
+    assert "más de un profesional atendiendo" not in texto
+
+
+def test_con_profesionales_aparecen_los_nombres_en_el_prompt():
+    """No van a mano en prompts/sistema.md: tienen que salir siempre
+    iguales a lo que dice PROFESIONALES en el .env, sin que el negocio
+    tenga que mantener la misma lista en dos lugares."""
+    a = agente_falso(["hola"])
+    a.config.profesionales = {"Dra. García": "cal-1", "Dr. Pérez": "cal-2"}
+
+    texto = _texto_del_sistema(a._sistema())
+
+    assert "Dra. García" in texto
+    assert "Dr. Pérez" in texto

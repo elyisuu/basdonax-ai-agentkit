@@ -258,6 +258,8 @@ class _AjustesDeMentira:
         alerta_telegram_chat_id="",
         zona_horaria="UTC",
         postgres_dsn="",
+        profesionales=None,
+        google_service_account_json="cuenta-de-servicio-de-mentira",
     ) -> None:
         self.reserva_requiere_aprobacion = reserva_requiere_aprobacion
         self.url_publica = url_publica
@@ -271,6 +273,8 @@ class _AjustesDeMentira:
         self.alerta_telegram_token = alerta_telegram_token
         self.alerta_telegram_chat_id = alerta_telegram_chat_id
         self.zona_horaria = zona_horaria
+        self.profesionales = profesionales or {}
+        self.google_service_account_json = google_service_account_json
         self.postgres_dsn = postgres_dsn
 
 
@@ -672,6 +676,205 @@ def test_con_aprobacion_y_horario_ocupado_no_crea_nada(monkeypatch):
 
     assert "ocupado" in resultado.lower()
     assert not cal.eventos
+
+
+# -- Varios profesionales, cada uno con su propia agenda -------------------------
+#
+# Fase 1 (ver AGENTS.md): solo anotar_reserva y franjas_ocupadas. Sin
+# PROFESIONALES configurado, cero cambio de comportamiento — por eso casi
+# todos los tests de arriba de esta sección ni lo mencionan y siguen
+# pasando: _AjustesDeMentira() por default trae profesionales={}.
+
+
+def test_buscar_calendar_id_encuentra_sin_importar_mayusculas_ni_espacios():
+    profesionales = {"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+    assert herramientas._buscar_calendar_id(profesionales, "dra. garcía") == "cal-garcia"
+    assert herramientas._buscar_calendar_id(profesionales, "  Dr. Pérez  ") == "cal-perez"
+
+
+def test_buscar_calendar_id_none_si_no_esta():
+    assert herramientas._buscar_calendar_id({"Ana": "cal-1"}, "Beto") is None
+
+
+def test_error_profesional_sin_profesionales_configurados_nunca_frena():
+    """Modo de siempre: un solo profesional (o ninguno) — profesional no
+    se usa para nada, venga vacío o con cualquier cosa."""
+    ajustes = _AjustesDeMentira()
+    assert herramientas._error_profesional(ajustes, "") is None
+    assert herramientas._error_profesional(ajustes, "cualquier cosa") is None
+
+
+def test_error_profesional_sin_especificar_pide_elegir():
+    ajustes = _AjustesDeMentira(profesionales={"Dra. García": "cal-1", "Dr. Pérez": "cal-2"})
+    error = herramientas._error_profesional(ajustes, "")
+    assert error is not None
+    assert "Dra. García" in error
+    assert "Dr. Pérez" in error
+
+
+def test_error_profesional_que_no_coincide():
+    ajustes = _AjustesDeMentira(profesionales={"Dra. García": "cal-1"})
+    error = herramientas._error_profesional(ajustes, "Dr. Nadie")
+    assert error is not None
+    assert "Dr. Nadie" in error
+    assert "Dra. García" in error
+
+
+def test_error_profesional_que_coincide_no_frena():
+    ajustes = _AjustesDeMentira(profesionales={"Dra. García": "cal-1"})
+    assert herramientas._error_profesional(ajustes, "dra. garcía") is None
+
+
+def test_calendario_de_sin_profesionales_delega_en_calendario_del_config(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    monkeypatch.setattr(herramientas, "_ajustes_del_config", lambda config: _AjustesDeMentira())
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+
+    assert herramientas._calendario_de(_config(), "") is cal
+
+
+def test_calendario_de_con_profesionales_arma_el_calendario_de_ese_profesional(monkeypatch):
+    ajustes = _AjustesDeMentira(
+        profesionales={"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+    )
+    monkeypatch.setattr(herramientas, "_ajustes_del_config", lambda config: ajustes)
+    llamadas = []
+    cal = _CalendarioDeMentira(libre=True)
+    monkeypatch.setattr(
+        herramientas,
+        "_construir_calendario",
+        lambda calendar_id, ajustes: llamadas.append(calendar_id) or cal,
+    )
+
+    resultado = herramientas._calendario_de(_config(), "Dr. Pérez")
+
+    assert resultado is cal
+    assert llamadas == ["cal-perez"]
+
+
+def test_calendario_de_con_profesionales_y_nombre_que_no_coincide_da_none(monkeypatch):
+    ajustes = _AjustesDeMentira(profesionales={"Dra. García": "cal-garcia"})
+    monkeypatch.setattr(herramientas, "_ajustes_del_config", lambda config: ajustes)
+
+    assert herramientas._calendario_de(_config(), "Dr. Nadie") is None
+
+
+def test_anotar_reserva_sin_elegir_profesional_pregunta_antes_de_tocar_nada(monkeypatch):
+    """Ni Chatwoot ni el calendario se tocan hasta saber con quién."""
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(
+            profesionales={"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+        ),
+    )
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    monkeypatch.setattr(herramientas, "_construir_calendario", lambda calendar_id, ajustes: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    resultado = anotar_reserva.invoke(
+        {"nombre": "Ana", "personas": 1, "fecha": "2026-09-12", "hora": "10:00"},
+        config=_config(),
+    )
+
+    assert "Dra. García" in resultado
+    assert "Dr. Pérez" in resultado
+    assert not cal.eventos
+    assert chatwoot.notas == []
+
+
+def test_anotar_reserva_con_profesional_que_no_existe_avisa(monkeypatch):
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(profesionales={"Dra. García": "cal-garcia"}),
+    )
+
+    resultado = anotar_reserva.invoke(
+        {
+            "nombre": "Ana",
+            "personas": 1,
+            "fecha": "2026-09-12",
+            "hora": "10:00",
+            "profesional": "Dr. Inventado",
+        },
+        config=_config(),
+    )
+
+    assert "Dr. Inventado" in resultado
+    assert "Dra. García" in resultado
+
+
+def test_anotar_reserva_con_el_profesional_correcto_reserva_en_su_agenda(monkeypatch):
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(
+            profesionales={"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+        ),
+    )
+    cal_garcia = _CalendarioDeMentira(libre=True)
+    cal_perez = _CalendarioDeMentira(libre=True)
+    calendarios = {"cal-garcia": cal_garcia, "cal-perez": cal_perez}
+    monkeypatch.setattr(
+        herramientas,
+        "_construir_calendario",
+        lambda calendar_id, ajustes: calendarios[calendar_id],
+    )
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultado = anotar_reserva.invoke(
+        {
+            "nombre": "Ana",
+            "personas": 1,
+            "fecha": "2026-09-12",
+            "hora": "10:00",
+            "profesional": "dr. pérez",  # minúsculas a propósito
+        },
+        config=_config(),
+    )
+
+    assert "confirmado" in resultado.lower()
+    assert cal_perez.eventos, "el turno tenía que quedar en la agenda del Dr. Pérez"
+    assert not cal_garcia.eventos, "y no en la de la Dra. García"
+
+
+def test_franjas_ocupadas_sin_elegir_profesional_pregunta(monkeypatch):
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(
+            profesionales={"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+        ),
+    )
+
+    resultado = franjas_ocupadas.invoke({"fecha": "2026-09-12"}, config=_config())
+
+    assert "Dra. García" in resultado
+    assert "Dr. Pérez" in resultado
+
+
+def test_franjas_ocupadas_con_profesional_correcto_consulta_su_agenda(monkeypatch):
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(
+            profesionales={"Dra. García": "cal-garcia", "Dr. Pérez": "cal-perez"}
+        ),
+    )
+    cal_perez = _CalendarioDeMentira(ocupado=[("10:00", "11:00")])
+    monkeypatch.setattr(
+        herramientas,
+        "_construir_calendario",
+        lambda calendar_id, ajustes: cal_perez if calendar_id == "cal-perez" else None,
+    )
+
+    resultado = franjas_ocupadas.invoke(
+        {"fecha": "2026-09-12", "profesional": "Dr. Pérez"}, config=_config()
+    )
+
+    assert "10:00" in resultado and "11:00" in resultado
 
 
 # -- Horario de atención -----------------------------------------------------------
