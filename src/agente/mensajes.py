@@ -23,6 +23,34 @@ from .agente import Agente
 registro = logging.getLogger("agente.mensajes")
 
 
+def _texto_de(contenido: object) -> str:
+    """El texto de una respuesta del modelo — mismo criterio que
+    agente.py: _texto_de(), pero acá se lo reimplementa en vez de
+    importarlo porque ese es privado de ese módulo.
+
+    Bug real, encontrado en vivo el 12 sep 2026 y reproducido contra el
+    modelo de verdad: con el thinking adaptativo de Claude (siempre
+    prendido, ver modelos.py), `respuesta.content` NO siempre es un
+    string — a veces es una LISTA de bloques (uno "thinking", vacío
+    porque display es "omitted", y otro "text" con la respuesta real).
+    El chequeo viejo (`isinstance(respuesta.content, str)`) daba por
+    vacía cualquier respuesta que viniera en ese formato — el modelo SÍ
+    había traducido bien, pero el código lo tiraba y mandaba el texto en
+    español tal cual. No es intermitente por el idioma: es intermitente
+    porque el modelo no siempre decide pensar antes de responder, y
+    cuando lo hace, cambia la forma del content.
+    """
+    if isinstance(contenido, str):
+        return contenido
+    if isinstance(contenido, list):
+        return "".join(
+            b.get("text", "")
+            for b in contenido
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
 def mensaje_en_idioma_de_conversacion(
     agente: Agente, conversacion: str, texto_es: str
 ) -> str:
@@ -58,24 +86,38 @@ def mensaje_en_idioma_de_conversacion(
             )
             return texto_es
 
+        # Numerados y con el último marcado a propósito: alguien puede
+        # cambiar de idioma a mitad de conversación (o, en pruebas, un
+        # mismo número de WhatsApp se usa para probar en varios idiomas
+        # seguidos) — sin esto, el modelo promediaba entre los 4 mensajes
+        # en vez de darle prioridad al más reciente, y el aviso podía
+        # salir en el idioma de un mensaje de hace rato, no el de ahora.
+        mensajes_numerados = "\n".join(
+            f"{i}. {texto}" + (" (el más reciente)" if i == len(ultimos) else "")
+            for i, texto in enumerate(ultimos, start=1)
+        )
+
         respuesta = agente.modelo.invoke(
             [
                 SystemMessage(
                     "Traducí el siguiente aviso al idioma en el que está "
-                    "escrita esta conversación (mirá los mensajes de abajo "
-                    "para saber cuál es). Si el idioma es español, usá "
+                    "escrita esta conversación. Te paso los últimos mensajes "
+                    "de la persona, numerados — si no todos están en el "
+                    "mismo idioma (cambió de idioma a mitad de charla), usá "
+                    "el del ÚLTIMO mensaje (el más reciente), no el más "
+                    "repetido ni un promedio. Si el idioma es español, usá "
                     "español NEUTRO — sin voseo argentino (nunca 'vos', "
                     "'tenés', 'andá') ni modismos de ningún país, como se "
                     "entendería igual en cualquier país hispanohablante. "
                     "Si ya está en ese idioma y ya es neutro, devolvelo tal "
                     "cual. Respondé SOLO con el aviso traducido, sin "
                     "comillas ni explicaciones.\n\n"
-                    "Mensajes de la conversación:\n" + "\n".join(ultimos)
+                    "Mensajes de la persona:\n" + mensajes_numerados
                 ),
                 HumanMessage(texto_es),
             ]
         )
-        traducido = respuesta.content if isinstance(respuesta.content, str) else ""
+        traducido = _texto_de(respuesta.content)
         if not traducido.strip():
             registro.warning(
                 "[%s] mensaje_en_idioma_de_conversacion: el modelo devolvió "

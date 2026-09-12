@@ -594,3 +594,34 @@ def test_mensaje_en_idioma_si_el_modelo_falla_devuelve_el_texto_tal_cual():
     )
 
     assert resultado == "Tu turno quedó confirmado."
+
+
+def test_mensaje_en_idioma_extrae_el_texto_cuando_viene_en_bloques():
+    """Bug real, reproducido contra el modelo de verdad el 12 sep 2026: con
+    el thinking adaptativo de Claude (siempre prendido, ver modelos.py),
+    `respuesta.content` no siempre es un string — a veces es una LISTA de
+    bloques (uno "thinking", vacío porque display es "omitted", y otro
+    "text" con la traducción real). El chequeo viejo
+    (isinstance(content, str)) daba eso por una traducción vacía y mandaba
+    el texto en español tal cual, aunque el modelo SÍ había traducido
+    bien — no es un problema de idioma, es de cómo se lee la respuesta."""
+    from langchain_core.messages import AIMessage
+
+    class _ModeloConThinking:
+        def invoke(self, mensajes):
+            return AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "", "signature": "x"},
+                    {"type": "text", "text": "O seu turno ficou confirmado!"},
+                ]
+            )
+
+    agente = agente_falso(["Claro, posso ajudar"])
+    agente.responder("Ola, queria marcar uma consulta", "42")  # puebla el historial
+    agente.modelo = _ModeloConThinking()  # simula la respuesta en bloques
+
+    resultado = webhook_modulo._mensaje_en_idioma_de_conversacion(
+        agente, "42", "Tu turno quedó confirmado."
+    )
+
+    assert resultado == "O seu turno ficou confirmado!"

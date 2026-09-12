@@ -57,6 +57,24 @@ mismo bug se encontró primero en el webhook y recién después en
 un cuarto lugar que manda un aviso fijo, va acá también, no copiado y
 pegado.
 
+**Trampa real, ya pisada una vez: `respuesta.content` de Claude no
+siempre es un string.** Con el thinking adaptativo (siempre prendido,
+ver `modelos.py`), a veces viene como una LISTA de bloques — uno
+`"thinking"` (vacío, porque `display` es `"omitted"`) y otro `"text"`
+con la respuesta de verdad. `agente.py` ya tiene `_texto_de()` para esto
+(mira si es lista y junta los bloques `"text"`); `mensajes.py` en su
+primera versión usaba `isinstance(content, str)` a secas y no lo tenía
+en cuenta. El síntoma no fue un error: la traducción "funcionaba" (sin
+excepción, sin alerta de Telegram) pero devolvía vacío la mitad de las
+veces, así que el aviso siempre caía al texto en español — encontrado
+recién reproduciéndolo a mano contra el modelo de verdad varias veces
+seguidas, porque el modelo no piensa antes de responder siempre, así que
+tampoco fallaba siempre. Cualquier código nuevo que le pida algo suelto
+al modelo (no una respuesta de chat de siempre, que ya pasa por
+`_texto_de()` en `agente.py`) tiene que sacar el texto igual — `mensajes.py`
+tiene su propia copia de esa función por lo mismo que se explica ahí (es
+privada de `agente.py`).
+
 ---
 
 ## Estructura
