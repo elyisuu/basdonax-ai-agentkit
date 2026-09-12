@@ -540,6 +540,11 @@ def reprogramar_mi_reserva(
     eso, no lo mueve — le decís a la persona que hable directo con el
     negocio.
 
+    Con RESERVA_REQUIERE_APROBACION, el horario NUEVO queda "tentative"
+    igual que una reserva recién creada — el negocio tiene que aprobarlo
+    de nuevo, no se confirma solo. Tiene sentido: el negocio ya aprobó el
+    horario VIEJO, no el nuevo que la persona está pidiendo ahora.
+
     Args:
         fecha_actual: La fecha con la que se anotó la reserva, AAAA-MM-DD.
         hora_actual: La hora con la que se anotó, HH:MM (24 horas).
@@ -575,6 +580,8 @@ def reprogramar_mi_reserva(
         duracion = _duracion_minutos(evento)
         inicio_nuevo, fin_nuevo = calendario.rango(fecha_nueva, hora_nueva, duracion)
 
+        requiere_aprobacion = ajustes.reserva_requiere_aprobacion
+
         # Mismo candado que anotar_reserva: "¿está libre el horario nuevo?"
         # y "crearlo" tienen que ser una sola operación de cara a otra
         # conversación pidiendo ese mismo horario (ver _candados_calendario).
@@ -589,15 +596,47 @@ def reprogramar_mi_reserva(
             # tiene un PATCH atómico para start/end que además re-chequee
             # freeBusy, así que el chequeo de arriba y esto son dos pasos.
             calendario.cancelar_evento(evento["id"])
-            calendario.crear_evento(
+            nuevo_evento = calendario.crear_evento(
                 titulo=evento.get("summary", ""),
                 descripcion=evento.get("description", ""),
                 inicio=inicio_nuevo,
                 fin=fin_nuevo,
-                estado=evento.get("status", "confirmed"),
+                # A diferencia de antes (heredar evento.get("status", ...)):
+                # el horario VIEJO ya estaba aprobado, pero el NUEVO todavía
+                # no — con aprobación manual activada, reprogramar tiene que
+                # volver a pedirla, no confirmarse solo. Encontrado en vivo
+                # el 12 sep 2026: un cliente movió su turno y quedó
+                # confirmado de una, sin que el negocio lo revisara.
+                estado="tentative" if requiere_aprobacion else "confirmed",
             )
     except Exception as e:
         return f"No se pudo reprogramar la reserva: {type(e).__name__}: {e}"
+
+    if requiere_aprobacion:
+        chatwoot = _chatwoot_del_config(config)
+        if chatwoot is not None and conversacion:
+            profesional = _nombre_profesional_de(ajustes, calendario)
+            nota = (
+                f"Reprogramación pendiente de aprobación: {fecha_actual} "
+                f"{hora_actual} → {fecha_nueva} {hora_nueva}\n\n"
+                + _aviso_de_aprobacion(
+                    ajustes, conversacion, nuevo_evento.get("id", ""), profesional
+                )
+            )
+            try:
+                chatwoot.anotar(conversacion, nota)
+                chatwoot.etiquetar(conversacion, ETIQUETA_RESERVA_PENDIENTE)
+            except Exception:
+                pass  # el calendario ya tiene el horario tomado; un aviso
+                # que no sale no puede arruinar una reprogramación real —
+                # mismo criterio que anotar_reserva.
+
+        return (
+            f"Nuevo horario reservado para el {fecha_nueva} a las "
+            f"{hora_nueva}: ya nadie más lo puede tomar, pero queda a la "
+            "espera de que el negocio lo apruebe. Avisale a la persona "
+            "que le confirman en breve."
+        )
 
     _avisar_a_chatwoot(
         config,
@@ -1094,6 +1133,19 @@ def _buscar_calendar_id(profesionales: dict[str, str], profesional: str) -> str 
         if nombre.strip().lower() == objetivo:
             return calendar_id
     return None
+
+
+def _nombre_profesional_de(ajustes: Config, calendario: Calendario) -> str:
+    """El nombre del profesional dueño de `calendario` — el reverso de
+    `_buscar_calendar_id`. La usa reprogramar_mi_reserva para armar el
+    link de aprobación: `_buscar_mi_turno` devuelve el Calendario, pero
+    `aprobacion.link`/`_aviso_de_aprobacion` necesitan el NOMBRE (viaja en
+    la URL y en la firma, ver aprobacion.py). Vacío si el negocio tiene
+    un solo profesional (o ninguno) — mismo significado de siempre."""
+    for nombre, calendar_id in ajustes.profesionales.items():
+        if calendar_id == calendario.calendario_id:
+            return nombre
+    return ""
 
 
 def _error_profesional(ajustes: Config, profesional: str) -> str | None:

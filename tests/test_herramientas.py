@@ -1451,6 +1451,62 @@ def test_reprogramar_mi_reserva_mueve_el_turno_y_conserva_los_datos(monkeypatch)
     assert (nuevo_fin - nuevo_inicio) == timedelta(minutes=90), "conserva la duración"
 
 
+def test_reprogramar_mi_reserva_con_aprobacion_queda_tentative(monkeypatch):
+    """Encontrado en vivo: con RESERVA_REQUIERE_APROBACION activado, mover
+    un turno lo confirmaba de una — el negocio ya había aprobado el
+    horario VIEJO, no el nuevo que la persona está pidiendo ahora."""
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    _con_aprobacion(monkeypatch)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan", inicio, fin, estado="confirmed")
+
+    resultado = reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    assert "espera de que el negocio lo apruebe" in resultado.lower()
+    assert "moví" not in resultado.lower()
+    assert len(cal.eventos) == 1
+    assert cal.eventos[0]["estado"] == "tentative"
+    assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA_PENDIENTE)]
+    assert "pendiente de aprobación" in chatwoot.notas[0][1].lower()
+
+
+def test_reprogramar_mi_reserva_con_aprobacion_y_url_publica_suma_los_links(monkeypatch):
+    cal = _CalendarioDeMentira(libre=True)
+    chatwoot = _ChatwootDeMentira()
+    _con_aprobacion(monkeypatch, url_publica="https://negocio.com", reserva_secreto="shhh")
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan", inicio, fin, estado="confirmed")
+
+    reprogramar_mi_reserva.invoke(
+        {
+            "fecha_actual": "2026-09-12",
+            "hora_actual": "20:00",
+            "fecha_nueva": "2026-09-13",
+            "hora_nueva": "21:00",
+        },
+        config=_config(),
+    )
+
+    nota = chatwoot.notas[0][1]
+    assert "Aprobar: https://negocio.com/reservas/aprobar/" in nota
+    assert "Rechazar: https://negocio.com/reservas/rechazar/" in nota
+
+
 def test_reprogramar_mi_reserva_con_el_horario_nuevo_ocupado(monkeypatch):
     cal = _CalendarioDeMentira(libre=False)  # se_superpone siempre True
     monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)

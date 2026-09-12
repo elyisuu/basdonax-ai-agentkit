@@ -608,6 +608,21 @@ Sin `URL_PUBLICA`/`RESERVA_SECRETO` puestos, este modo igual reserva el
 horario en el calendario (nadie te lo dobla-reserva), pero sin links: hay
 que aprobar o rechazar directo en Google Calendar a mano.
 
+**`reprogramar_mi_reserva` respeta lo mismo, no solo `anotar_reserva`.**
+Encontrado en vivo el 12 sep 2026: mover un turno a otro horario lo
+confirmaba de una aunque `RESERVA_REQUIERE_APROBACION` estuviera
+activado — el código heredaba el `status` del evento VIEJO
+(`evento.get("status", "confirmed")`), y como el viejo ya estaba
+"confirmed" (se había aprobado en su momento), el nuevo salía igual, sin
+que el negocio revisara el horario nuevo. Tiene sentido que no fuera
+automático: el negocio aprobó el horario de ANTES, no el que la persona
+está pidiendo ahora. Arreglado — el turno reprogramado sale "tentative"
+igual que uno nuevo, con su propia nota y sus propios links de
+aprobar/rechazar (`_aviso_de_aprobacion`, mismo mecanismo). Con varios
+profesionales, el nombre para el link sale de `_nombre_profesional_de()`
+(el reverso de `_buscar_calendar_id`): `_buscar_mi_turno` devuelve el
+`Calendario`, no el nombre, y el link lo necesita.
+
 ## Horario de atención
 
 `HORARIO_DESDE`/`HORARIO_HASTA` (un turno corrido), `HORARIO_FRANJAS`
