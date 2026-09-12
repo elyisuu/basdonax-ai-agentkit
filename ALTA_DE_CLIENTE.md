@@ -19,6 +19,9 @@ en paralelo con todo lo demás.
       clientes).
 - [ ] Si es prueba gratis: dejar clarísimo qué pasa si no sigue (se apaga la
       instancia, no se cobra nada) — para que no haya sorpresa.
+- [ ] Conversación de privacidad (ver `PRIVACIDAD.md`): qué datos junta el
+      bot, cuánto se guardan, qué le dice el negocio a SUS pacientes — más
+      importante todavía si el negocio maneja datos de salud.
 - [ ] Nombre y apellido de cada profesional que va a atender, tal cual
       quiere que el bot lo mencione (si son varios, ver "Varios
       profesionales" en `AGENTS.md`).
@@ -43,6 +46,23 @@ todos los que compartieran esa cuenta).
 - [ ] El cliente agrega su número de WhatsApp Business a esa cuenta.
 - [ ] El cliente te da acceso de partner/admin sobre ese WABA para que
       puedas conectarlo a Chatwoot.
+- [ ] **Método de pago en la facturación de WhatsApp Business Platform**
+      (dentro de ese mismo Meta Business Manager, no algo tuyo): sin esto,
+      el número solo puede responder DENTRO de las 24hs desde el último
+      mensaje del cliente — pasada esa ventana, cualquier mensaje que el
+      negocio inicie (un recordatorio de turno, por ejemplo) necesita una
+      plantilla aprobada por Meta, y una plantilla necesita facturación
+      activa para poder mandarse. Esto **lo tiene que cargar el cliente
+      mismo** en su propia cuenta — no es algo que puedas hacer vos ni que
+      yo pueda hacer por vos (no toco datos de tarjetas). Sin esto,
+      `recordatorios.py` puede fallar en silencio para cualquiera que no
+      te haya escrito en las últimas 24hs — vale la pena probarlo antes de
+      confiar en que los recordatorios le llegan a todo el mundo.
+- [ ] Si vas a usar `recordatorios.py` con este cliente: una plantilla de
+      mensaje aprobada por Meta para el recordatorio (hoy el código manda
+      texto libre, que no sirve fuera de la ventana de 24hs — falta
+      adaptar el envío para que use la plantilla una vez que exista una
+      real para probar contra ella).
 
 ## 2. Google Calendar — un calendario por profesional
 
@@ -107,6 +127,9 @@ Completar (ver `.env.example` para el detalle de cada uno):
       sin texto (confirmar que no se queda callado), y si hay varios
       profesionales, pedir turno sin decir con cuál (confirmar que
       pregunta en vez de adivinar).
+- [ ] Scheduled Task en Coolify para `retencion.py` (una vez por mes
+      alcanza) — antes de activarla, corré `python retencion.py` (sin
+      `--aplicar`) a mano una vez para ver qué diría que borra.
 
 ## 7. Entrega
 
@@ -120,6 +143,6 @@ Completar (ver `.env.example` para el detalle de cada uno):
 
 - [ ] Si era prueba gratis: recordatorio a los 14 días para pasar a
       mensualidad.
-- [ ] Si no sigue: apagar la instancia y aplicar la política de retención
-      de datos (2 años — el script para esto todavía está pendiente, ver
-      `AGENTS.md`).
+- [ ] Si no sigue: apagar la instancia. La política de retención de 2
+      años (`retencion.py`) ya la tenía corriendo sola desde el punto 6 —
+      no hace falta nada extra acá salvo apagar el servidor.

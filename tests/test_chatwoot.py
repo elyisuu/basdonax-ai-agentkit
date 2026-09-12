@@ -322,6 +322,61 @@ def test_agregar_nota_contacto():
     }
 
 
+# -- Retención de datos (retencion.py): listar y borrar notas de contacto -----
+
+
+def test_listar_notas_contacto_devuelve_el_payload():
+    class ChatwootConNotas(ChatwootFalso):
+        def _api(self, metodo, camino, datos=None):
+            super()._api(metodo, camino, datos)
+            return {"payload": [{"id": 1, "created_at": 123}, {"id": 2, "created_at": 456}]}
+
+    notas = ChatwootConNotas().listar_notas_contacto("42")
+
+    assert notas == [{"id": 1, "created_at": 123}, {"id": 2, "created_at": 456}]
+
+
+def test_listar_notas_contacto_sin_payload_es_lista_vacia():
+    canal = ChatwootFalso()  # _api de mentira devuelve {"id": 99}, sin "payload"
+
+    assert canal.listar_notas_contacto("42") == []
+
+
+def test_borrar_nota_contacto():
+    canal = ChatwootFalso()
+
+    canal.borrar_nota_contacto("42", 7)
+
+    pedido = canal.llamadas[-1]
+    assert pedido == {"metodo": "DELETE", "camino": "contacts/42/notes/7", "datos": None}
+
+
+def test_listar_contactos_devuelve_el_payload():
+    class ChatwootConContactos(ChatwootFalso):
+        def _api(self, metodo, camino, datos=None):
+            super()._api(metodo, camino, datos)
+            return {"payload": [{"id": 1}, {"id": 2}]}
+
+    contactos = ChatwootConContactos().listar_contactos(1)
+
+    assert contactos == [{"id": 1}, {"id": 2}]
+
+
+def test_listar_contactos_manda_la_pagina_pedida():
+    canal = ChatwootFalso()
+
+    canal.listar_contactos(3)
+
+    pedido = canal.llamadas[-1]
+    assert pedido == {"metodo": "GET", "camino": "contacts?page=3", "datos": None}
+
+
+def test_listar_contactos_sin_payload_es_lista_vacia():
+    canal = ChatwootFalso()
+
+    assert canal.listar_contactos(1) == []
+
+
 # -- Lo que sale --------------------------------------------------------------
 
 

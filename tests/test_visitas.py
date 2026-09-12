@@ -18,10 +18,12 @@ from agente import visitas  # noqa: E402
 
 
 class _CursorDeMentira:
-    """Lo que devuelve `.execute(...)`: alcanza con `.fetchall()`."""
+    """Lo que devuelve `.execute(...)`: alcanza con `.fetchall()` y
+    `.rowcount` (esto último lo usa borrar_visitas_viejas)."""
 
-    def __init__(self, filas: list[tuple]) -> None:
+    def __init__(self, filas: list[tuple], rowcount: int = 0) -> None:
         self._filas = filas
+        self.rowcount = rowcount
 
     def fetchall(self):
         return self._filas
@@ -33,16 +35,22 @@ class _ConexionDeMentira:
     devuelve `filas_a_devolver` (para las consultas que hacen `.fetchall()`,
     como `resumen_mensual`)."""
 
-    def __init__(self, rompe: bool = False, filas_a_devolver: list[tuple] | None = None) -> None:
+    def __init__(
+        self,
+        rompe: bool = False,
+        filas_a_devolver: list[tuple] | None = None,
+        rowcount: int = 0,
+    ) -> None:
         self.ejecutados: list[tuple[str, tuple | None]] = []
         self._rompe = rompe
         self._filas = filas_a_devolver or []
+        self._rowcount = rowcount
 
     def execute(self, sql, params=None):
         if self._rompe:
             raise RuntimeError("Postgres no contesta")
         self.ejecutados.append((sql, params))
-        return _CursorDeMentira(self._filas)
+        return _CursorDeMentira(self._filas, rowcount=self._rowcount)
 
     def __enter__(self):
         return self
@@ -229,3 +237,23 @@ def test_listar_manda_el_limite_a_la_consulta(monkeypatch):
 
     _, params = conexion.ejecutados[0]
     assert params == (50,)
+
+
+# -- Borrado por política de retención (retencion.py) ----------------------------
+
+
+def test_borrar_visitas_viejas_sin_dsn_no_hace_nada():
+    assert visitas.borrar_visitas_viejas("", "2024-01-01") == 0
+
+
+def test_borrar_visitas_viejas_ejecuta_el_delete_y_devuelve_cuantas(monkeypatch):
+    conexion = _ConexionDeMentira(rowcount=3)
+    _psycopg_falso(monkeypatch, conexion)
+
+    borradas = visitas.borrar_visitas_viejas("dsn-falso", "2024-01-01")
+
+    assert borradas == 3
+    sql, params = conexion.ejecutados[0]
+    assert "DELETE FROM visitas" in sql
+    assert "fecha_turno" in sql
+    assert params == ("2024-01-01",)

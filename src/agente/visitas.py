@@ -200,3 +200,23 @@ def listar_visitas(dsn: str, limite: int = 200) -> list[dict]:
         }
         for nombre, telefono, motivo, fecha, hora, es_nueva in filas
     ]
+
+
+def borrar_visitas_viejas(dsn: str, antes_de: str) -> int:
+    """Borra las visitas con `fecha_turno` anterior a `antes_de`
+    (AAAA-MM-DD). Devuelve cuántas filas borró.
+
+    La usa `retencion.py` (política de 2 años, ver AGENTS.md → "Dónde
+    termina el dato de una persona"). Sin DSN, no hace nada y devuelve 0 —
+    mismo criterio que el resto de este archivo.
+    """
+    if not dsn:
+        return 0
+
+    import psycopg
+
+    with psycopg.connect(dsn, autocommit=True) as conexion:
+        cursor = conexion.execute(
+            "DELETE FROM visitas WHERE fecha_turno < %s", (antes_de,)
+        )
+        return cursor.rowcount

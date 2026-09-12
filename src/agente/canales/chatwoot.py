@@ -289,6 +289,37 @@ class Chatwoot(Canal):
         escriba, así haya sido por una conversación distinta."""
         self._api("POST", f"contacts/{contacto_id}/notes", {"content": texto})
 
+    def listar_notas_contacto(self, contacto_id: str) -> list[dict]:
+        """Las notas del perfil de ese contacto — el reverso de leer de
+        `agregar_nota_contacto()`. Cada una trae al menos `id` y
+        `created_at`, que es lo que mira `retencion.py` para decidir
+        cuáles están vencidas.
+
+        **Sin probar contra una cuenta de Chatwoot de verdad todavía**
+        (ver `retencion.py`, `_fecha_de_nota()`): si tu versión de Chatwoot
+        no envuelve la lista en `"payload"`, esta es la función a revisar.
+        """
+        respuesta = self._api("GET", f"contacts/{contacto_id}/notes")
+        return respuesta.get("payload") or []
+
+    def borrar_nota_contacto(self, contacto_id: str, nota_id) -> None:
+        """Borra una nota puntual del perfil del contacto — el reverso de
+        `agregar_nota_contacto()`. La usa `retencion.py` para la política
+        de 2 años (ver AGENTS.md → "Dónde termina el dato de una persona")."""
+        self._api("DELETE", f"contacts/{contacto_id}/notes/{nota_id}")
+
+    def listar_contactos(self, pagina: int = 1) -> list[dict]:
+        """Una página de contactos de la cuenta.
+
+        La usa `retencion.py` para recorrer TODOS los contactos buscando
+        notas vencidas: no hay un endpoint que traiga "todas las notas de
+        todos los contactos" de una — hay que ir contacto por contacto.
+        Lista vacía cuando `pagina` ya pasó la última (así el que llama
+        sabe cuándo parar, sin tener que leer la paginación de la
+        respuesta)."""
+        respuesta = self._api("GET", f"contacts?page={pagina}")
+        return respuesta.get("payload") or []
+
     def escribiendo(self, conversacion: str, encendido: bool = True) -> None:
         """El "escribiendo..." mientras el modelo piensa.
 

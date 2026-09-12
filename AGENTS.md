@@ -8,7 +8,9 @@ tengas que explicar cada vez.
 Si sos una persona: leé el `README.md`, es el que está escrito para vos.
 
 Si estás sumando un cliente nuevo (no tocando código): el checklist es
-**[ALTA_DE_CLIENTE.md](ALTA_DE_CLIENTE.md)**, no este archivo.
+**[ALTA_DE_CLIENTE.md](ALTA_DE_CLIENTE.md)**, no este archivo. Para la
+conversación de privacidad con ese cliente (qué datos junta el bot, por
+cuánto tiempo, qué decirle a sus pacientes): **[PRIVACIDAD.md](PRIVACIDAD.md)**.
 
 ---
 
@@ -877,12 +879,40 @@ no de memoria.
 
 **Política acordada (11 sep 2026): retener 2 años por default.** Es una
 decisión de producto, no una garantía legal (no es asesoría — varía según
-el país; acá aplica GDPR por ser un negocio en la UE) — **todavía no hay
-ningún script que la haga cumplir**. Falta el mismo tipo de programa que
-`recordatorios.py`: corre solo, borra lo que tenga más de 2 años en
-Postgres (conversaciones) y en las notas de contacto de Chatwoot, no toca
-nada si no hay nada vencido. Hasta que exista, esto es una política
-escrita, no una que el sistema cumpla sola.
+el país; acá aplica GDPR por ser un negocio en la UE).
+
+**El script que la aplica es `retencion.py`** (12 sep 2026) — mismo
+espíritu que `recordatorios.py`: corre solo y termina, pensado para una
+Scheduled Task de Coolify (una vez por mes alcanza, no hace falta más
+seguido). Revisa tres lugares:
+
+1. **Memoria de conversaciones en Postgres** — con la propia API de
+   `PostgresSaver` (`list()`/`delete_thread()`), no con SQL a mano contra
+   su esquema interno (no es público, cambia entre versiones).
+2. **La tabla `visitas`** (`visitas.borrar_visitas_viejas`).
+3. **Las notas de contacto de Chatwoot**, una por una según su propio
+   `created_at` — recorriendo TODOS los contactos de la cuenta
+   (`Chatwoot.listar_contactos`/`listar_notas_contacto`/
+   `borrar_nota_contacto`, `canales/chatwoot.py`): la API de Chatwoot no
+   tiene un "notas vencidas de cualquier contacto" de una sola consulta.
+
+**No toca:** los eventos de Google Calendar (son del negocio, no
+nuestros), las notas de CONVERSACIÓN de Chatwoot (`Chatwoot.anotar()`) ni
+las conversaciones mismas (esa es la bandeja del negocio), ni el backup de
+Postgres (su propia retención, aparte).
+
+**Por default NO borra nada — hace falta `python retencion.py --aplicar`
+para que borre de verdad.** Un DELETE no tiene deshacer, así que antes de
+correrlo con `--aplicar` por primera vez en una instancia (o después de
+cualquier cambio grande), corré el modo de prueba primero y mirá qué
+diría que borra.
+
+**Sin probar todavía contra una Postgres o una cuenta de Chatwoot de
+verdad** — la parte de Chatwoot en particular asume que `GET
+contacts/{id}/notes` envuelve la lista en `"payload"` y que `created_at`
+viene como timestamp Unix; si tu versión de Chatwoot lo manda distinto,
+`Chatwoot.listar_notas_contacto()` y `retencion._fecha_de_nota()` son las
+dos funciones a revisar antes de confiar en `--aplicar` en producción.
 
 
 ## Hacia dónde va (para no diseñar en contra)
