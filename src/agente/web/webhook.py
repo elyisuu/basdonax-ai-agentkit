@@ -55,9 +55,17 @@ registro = logging.getLogger("agente.webhook")
 # "OperationalError: consuming input failed..." en pleno WhatsApp no es
 # información, es una mala experiencia. El detalle real sigue yendo a los
 # logs (y, si está configurado, a la alerta de Telegram) tal cual antes.
+#
+# En español neutro (tú, no voseo argentino) a propósito — es la ÚNICA
+# excepción al "español rioplatense" que pide AGENTS.md para el resto del
+# código: esta variable no es un comentario ni un docstring, es texto que
+# lee un cliente de cualquier país. `responder()`, más abajo, la pasa por
+# _mensaje_en_idioma_de_conversacion() antes de mandarla — así alguien que
+# viene hablando en portugués o inglés no se encuentra, encima de la
+# falla, con un mensaje en un idioma que no entiende.
 MENSAJE_ERROR_GENERICO = (
-    "Uy, se me rompió algo de mi lado. Ya me avisaron y lo estamos mirando "
-    "— probá de nuevo en un rato."
+    "Se me rompió algo de mi lado. Ya lo estamos revisando — inténtalo de "
+    "nuevo en un rato."
 )
 
 
@@ -358,9 +366,13 @@ def _mensaje_en_idioma_de_conversacion(
                 SystemMessage(
                     "Traducí el siguiente aviso al idioma en el que está "
                     "escrita esta conversación (mirá los mensajes de abajo "
-                    "para saber cuál es). Si ya está en ese idioma, "
-                    "devolvelo tal cual. Respondé SOLO con el aviso "
-                    "traducido, sin comillas ni explicaciones.\n\n"
+                    "para saber cuál es). Si el idioma es español, usá "
+                    "español NEUTRO — sin voseo argentino (nunca 'vos', "
+                    "'tenés', 'andá') ni modismos de ningún país, como se "
+                    "entendería igual en cualquier país hispanohablante. "
+                    "Si ya está en ese idioma y ya es neutro, devolvelo tal "
+                    "cual. Respondé SOLO con el aviso traducido, sin "
+                    "comillas ni explicaciones.\n\n"
                     "Mensajes de la conversación:\n" + "\n".join(ultimos)
                 ),
                 HumanMessage(texto_es),
@@ -451,7 +463,13 @@ def crear_app(
                 # una falla con una no puede dejar sin respuesta a las demás.
                 aviso = f"{type(e).__name__}: {e}"
                 registro.error("[%s] %s", conversacion, aviso)
-                mensajes = [MENSAJE_ERROR_GENERICO]
+                mensaje_error = await asyncio.to_thread(
+                    _mensaje_en_idioma_de_conversacion,
+                    agente,
+                    conversacion,
+                    MENSAJE_ERROR_GENERICO,
+                )
+                mensajes = [mensaje_error]
                 await asyncio.to_thread(
                     alertas.avisar,
                     config.alerta_telegram_token,
@@ -674,7 +692,7 @@ def crear_app(
                             agente,
                             conversacion,
                             "Por ese horario no vamos a poder atenderte, "
-                            "disculpá. Escribinos para coordinar otro.",
+                            "disculpa. Escríbenos para coordinar otro.",
                         )
                         await asyncio.to_thread(canal.enviar, conversacion, [aviso])
                         await asyncio.to_thread(

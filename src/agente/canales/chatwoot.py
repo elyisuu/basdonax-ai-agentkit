@@ -55,10 +55,12 @@ PAUSA_ENTRE_GLOBOS = 0.8
 # como que el bot está roto. Fija y sin pasar por el modelo a propósito — es
 # predecible, así que no hace falta gastar un turno pensándola. En los tres
 # idiomas que atendemos (ver prompts/sistema.md) porque acá no sabemos
-# todavía en cuál le estábamos hablando a esta persona.
+# todavía en cuál le estábamos hablando a esta persona. La línea en
+# español va en neutro (tú, no voseo argentino) — es texto para un cliente
+# de cualquier país, no un comentario del código (ver AGENTS.md).
 MENSAJE_ADJUNTO_SIN_TEXTO = (
     "📎 Ainda não consigo ouvir áudios nem ver fotos — escreve, por favor?\n"
-    "Todavía no puedo escuchar audios ni ver fotos — ¿me escribís, porfa?\n"
+    "Todavía no puedo escuchar audios ni ver fotos — ¿me escribes, por favor?\n"
     "I can't listen to audio or see photos yet — could you type it, please?"
 )
 

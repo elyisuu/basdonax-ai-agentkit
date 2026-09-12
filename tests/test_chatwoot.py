@@ -688,6 +688,37 @@ def test_si_el_modelo_falla_se_le_avisa_a_la_persona():
     assert "rompió" in canal.envios()[0]
 
 
+def test_el_error_generico_se_traduce_al_idioma_de_la_conversacion(monkeypatch):
+    """MENSAJE_ERROR_GENERICO no pasa por el agente (es un aviso fijo, se
+    dispara desde el except) — sin esto siempre salía en el idioma en que
+    está escrito el código, sin importar el de la persona. Reproducido en
+    vivo: una conversación entera en portugués, aviso de error en
+    español. Acá se prueba el mecanismo (que responder() llama al
+    traductor con el aviso correcto) sin repetir las pruebas del
+    traductor en sí, que ya están en test_reservas_webhook.py."""
+    from agente.web import webhook as webhook_modulo
+    from test_agente import agente_falso
+
+    llamadas = []
+
+    def _traductor_falso(agente, conversacion, texto):
+        llamadas.append((conversacion, texto))
+        return "Aviso traducido"
+
+    monkeypatch.setattr(
+        webhook_modulo, "_mensaje_en_idioma_de_conversacion", _traductor_falso
+    )
+
+    canal = ChatwootFalso()
+    agente = agente_falso([])  # sin respuestas: el modelo falso revienta
+
+    with cliente(canal, agente) as web:
+        web.post("/chatwoot/secreto", json=evento("hola"))
+
+    assert canal.envios() == ["Aviso traducido"]
+    assert llamadas == [("12", webhook_modulo.MENSAJE_ERROR_GENERICO)]
+
+
 def test_el_error_que_ve_la_persona_no_es_el_crudo():
     """Un cliente de WhatsApp no tiene que ver un stack trace de Python.
 

@@ -33,6 +33,20 @@ docstrings y mensajes de error, todo en español rioplatense (voseo: *tenés*,
 (`messages`, `thread_id`, `checkpointer`, `StateGraph`) y los nombres de los
 proveedores. **Si escribís código nuevo acá, seguí esa convención.**
 
+**Una excepción a esa convención: el texto que lee un cliente final por
+WhatsApp va en español NEUTRO (tú, no voseo), nunca en rioplatense.** Es
+distinto de un comentario o un docstring — eso lo lee quien mantiene el
+código (vos, otro dev), pero un mensaje como `MENSAJE_ERROR_GENERICO`
+(`web/webhook.py`) o el de rechazo de `/reservas/{accion}` lo lee un
+paciente en cualquier país hispanohablante, y "probá de nuevo" o
+"escribinos" suena raro fuera del Río de la Plata. Mismo criterio para
+`_mensaje_en_idioma_de_conversacion()` (`web/webhook.py`): cuando traduce
+un aviso fijo al idioma de la conversación, si ese idioma es español le
+pide al modelo neutro a propósito, no lo que salga. Encontrado el 12 sep
+2026 probando la demo en portugués: el aviso de error genérico le llegó a
+la clienta en español rioplatense en vez de portugués — dos bugs
+distintos (el idioma equivocado, y encima el registro equivocado).
+
 ---
 
 ## Estructura
