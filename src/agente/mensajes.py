@@ -73,12 +73,12 @@ def mensaje_en_idioma_de_conversacion(
     idioma, y no hay forma de saber después por qué salió en español.
     """
     try:
-        ultimos = [
+        humanos = [
             m.content
             for m in agente.historial(conversacion)
             if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content
-        ][-4:]
-        if not ultimos:
+        ]
+        if not humanos:
             registro.info(
                 "[%s] mensaje_en_idioma_de_conversacion: sin historial, "
                 "se manda el texto en español tal cual",
@@ -86,45 +86,72 @@ def mensaje_en_idioma_de_conversacion(
             )
             return texto_es
 
-        # Numerados y con el último marcado a propósito: alguien puede
-        # cambiar de idioma a mitad de conversación (o, en pruebas, un
-        # mismo número de WhatsApp se usa para probar en varios idiomas
-        # seguidos) — sin esto, el modelo promediaba entre los 4 mensajes
-        # en vez de darle prioridad al más reciente, y el aviso podía
-        # salir en el idioma de un mensaje de hace rato, no el de ahora.
-        mensajes_numerados = "\n".join(
-            f"{i}. {texto}" + (" (el más reciente)" if i == len(ultimos) else "")
-            for i, texto in enumerate(ultimos, start=1)
-        )
+        # El ÚLTIMO mensaje es el único que importa de verdad — es
+        # literalmente el idioma en el que la persona le está hablando al
+        # bot AHORA. Antes se le pasaban al modelo los últimos 4 mensajes
+        # juntos, numerados, pidiéndole que "priorice" el más reciente —
+        # y aun así, en producción, terminó traduciendo al idioma de un
+        # mensaje de más atrás (ver AGENTS.md, 12 sep 2026: sin ninguna
+        # excepción ni alerta, solo una mala decisión del modelo entre
+        # varias señales). Separar el último de literal "el resto" — un
+        # solo texto principal, no una lista a promediar — deja mucho
+        # menos margen para esa confusión. Los anteriores quedan nada más
+        # como red de contención para un último mensaje corto/ambiguo
+        # ("sí", "912345678", un nombre solo).
+        ultimo = humanos[-1]
+        anteriores = humanos[-4:-1]
+
+        contexto = f'Último mensaje de la persona: "{ultimo}"'
+        if anteriores:
+            contexto += (
+                "\n\nMensajes anteriores de la misma conversación — usalos "
+                "para reconocer el idioma SOLO si el último mensaje es "
+                "demasiado corto o ambiguo (un número, un \"sí\", un "
+                "nombre solo) y no alcanza por sí mismo. Si el último ya "
+                "deja claro el idioma, ignorá estos por completo, aunque "
+                "estén en otro idioma (la persona pudo haber cambiado de "
+                "idioma a mitad de charla):\n"
+                + "\n".join(f"- {texto}" for texto in anteriores)
+            )
 
         respuesta = agente.modelo.invoke(
             [
                 SystemMessage(
                     "Traducí el siguiente aviso al idioma en el que está "
-                    "escrita esta conversación. Te paso los últimos mensajes "
-                    "de la persona, numerados — si no todos están en el "
-                    "mismo idioma (cambió de idioma a mitad de charla), usá "
-                    "el del ÚLTIMO mensaje (el más reciente), no el más "
-                    "repetido ni un promedio. Si el idioma es español, usá "
-                    "español NEUTRO — sin voseo argentino (nunca 'vos', "
-                    "'tenés', 'andá') ni modismos de ningún país, como se "
-                    "entendería igual en cualquier país hispanohablante. "
-                    "Si ya está en ese idioma y ya es neutro, devolvelo tal "
-                    "cual. Respondé SOLO con el aviso traducido, sin "
-                    "comillas ni explicaciones.\n\n"
-                    "Mensajes de la persona:\n" + mensajes_numerados
+                    "escrito el ÚLTIMO mensaje de esta conversación (te lo "
+                    "paso abajo). Si el idioma es español, usá español "
+                    "NEUTRO — sin voseo argentino (nunca 'vos', 'tenés', "
+                    "'andá') ni modismos de ningún país, como se entendería "
+                    "igual en cualquier país hispanohablante. Si ya está en "
+                    "ese idioma y ya es neutro, devolvelo tal cual. "
+                    "Respondé SOLO con el aviso traducido, sin comillas ni "
+                    "explicaciones.\n\n" + contexto
                 ),
                 HumanMessage(texto_es),
             ]
         )
-        traducido = _texto_de(respuesta.content)
-        if not traducido.strip():
+        traducido = _texto_de(respuesta.content).strip()
+
+        # Log incondicional (no solo en el except): si el idioma vuelve a
+        # salir mal sin ninguna excepción de por medio (como esta vez),
+        # esto es lo único que permite ver después qué vio el modelo y qué
+        # devolvió, sin tener que reproducirlo de nuevo gastando tokens.
+        registro.info(
+            "[%s] mensaje_en_idioma_de_conversacion: último mensaje=%r, "
+            "aviso original=%r, traducido=%r",
+            conversacion,
+            ultimo,
+            texto_es,
+            traducido,
+        )
+
+        if not traducido:
             registro.warning(
                 "[%s] mensaje_en_idioma_de_conversacion: el modelo devolvió "
                 "una traducción vacía, se manda el texto en español tal cual",
                 conversacion,
             )
-        return traducido.strip() or texto_es
+        return traducido or texto_es
     except Exception as e:
         detalle = f"{type(e).__name__}: {e}"
         registro.warning(

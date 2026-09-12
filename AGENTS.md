@@ -75,6 +75,25 @@ al modelo (no una respuesta de chat de siempre, que ya pasa por
 tiene su propia copia de esa función por lo mismo que se explica ahí (es
 privada de `agente.py`).
 
+**Segunda trampa, con el `_texto_de()` de arriba ya arreglado: el modelo
+puede elegir mal el idioma sin ninguna excepción de por medio.** Con el
+historial completo (los últimos 4 mensajes de la persona) pasado como
+una lista numerada pidiéndole que "priorice el más reciente", en
+producción igual tradujo al idioma de un mensaje de más atrás — ni un
+error ni un log, solo una mala decisión entre varias señales que se le
+dieron juntas. El arreglo no fue "insistir más" en el prompt: fue sacarle
+la decisión de encima. Ahora el ÚLTIMO mensaje de la persona va SOLO,
+como el texto principal a traducir contra — no un ítem más de una lista
+a evaluar — y los mensajes anteriores quedan aparte, explícitamente
+marcados como red de contención para cuando el último es demasiado corto
+o ambiguo ("sí", un número, un nombre). Verificado contra el modelo real
+con historiales mezclados a propósito (varios mensajes en español y el
+último en portugués, y viceversa) antes de darlo por resuelto. También se
+agregó un log incondicional (no solo en el `except`) con el último
+mensaje, el aviso original y la traducción — así una próxima falla de
+juicio del modelo (sin excepción, como esta) se ve en los logs sin
+depender de reproducirla de nuevo.
+
 ---
 
 ## Estructura
