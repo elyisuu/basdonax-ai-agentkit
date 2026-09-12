@@ -483,6 +483,12 @@ def cancelar_mi_reserva(fecha: str, hora: str, config: RunnableConfig) -> str:
     except Exception as e:
         return f"No se pudo cancelar la reserva: {type(e).__name__}: {e}"
 
+    # El calendario ya es la fuente de la verdad acá (el turno ya se
+    # canceló de verdad arriba), así que esto no puede fallar la
+    # respuesta — mismo criterio que _avisar_a_chatwoot, un par de líneas
+    # más abajo.
+    _marcar_visita_cancelada(config, ajustes, fecha, hora)
+
     _avisar_a_chatwoot(
         config,
         f"Reserva cancelada por la persona: {fecha} {hora}.",
@@ -858,6 +864,34 @@ def _registrar_visita(
             nombre=nombre,
             motivo=motivo,
         )
+    except Exception:
+        pass
+
+
+def _marcar_visita_cancelada(
+    config: RunnableConfig, ajustes: Config, fecha: str, hora: str
+) -> None:
+    """Avisa a visitas.py que ESE turno ya no cuenta para /estadisticas —
+    la usa cancelar_mi_reserva() cuando la persona cancela un turno que ya
+    había quedado confirmado (y por lo tanto ya estaba registrado, ver
+    _registrar_visita). Sin esto, la visita se seguía contando para
+    siempre como si la persona hubiera venido.
+
+    Nunca revienta: una estadística que no se pudo actualizar no puede
+    voltear una cancelación que ya se hizo de verdad en el calendario —
+    mismo criterio que _registrar_visita.
+    """
+    chatwoot = _chatwoot_del_config(config)
+    conversacion = _conversacion_de(config)
+    if chatwoot is None or not conversacion:
+        return
+
+    try:
+        contacto_id = chatwoot.contacto_de(conversacion)
+        if not contacto_id:
+            return
+
+        visitas.marcar_cancelada(ajustes.postgres_dsn, contacto_id, fecha, hora)
     except Exception:
         pass
 

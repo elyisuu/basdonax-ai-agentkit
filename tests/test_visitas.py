@@ -89,19 +89,20 @@ def test_registrar_sin_contacto_id_no_hace_nada(monkeypatch):
 # -- Preparar la tabla ----------------------------------------------------------
 
 
-def test_preparar_crea_la_tabla_el_indice_y_la_columna_motivo(monkeypatch):
+def test_preparar_crea_la_tabla_el_indice_y_las_columnas_agregadas(monkeypatch):
     conexion = _ConexionDeMentira()
     _psycopg_falso(monkeypatch, conexion)
 
     visitas.preparar("dsn-falso")
 
-    assert len(conexion.ejecutados) == 3
+    assert len(conexion.ejecutados) == 4
     assert "CREATE TABLE" in conexion.ejecutados[0][0]
     assert "visitas" in conexion.ejecutados[0][0]
     assert "CREATE INDEX" in conexion.ejecutados[1][0]
-    # ADD COLUMN IF NOT EXISTS: para la tabla que ya existía sin "motivo"
-    # antes de que se agregara — ver AGENTS.md.
+    # ADD COLUMN IF NOT EXISTS: para la tabla que ya existía sin estas
+    # columnas antes de que se agregaran — ver AGENTS.md.
     assert "ADD COLUMN IF NOT EXISTS motivo" in conexion.ejecutados[2][0]
+    assert "ADD COLUMN IF NOT EXISTS cancelado" in conexion.ejecutados[3][0]
 
 
 # -- Registrar una visita --------------------------------------------------------
@@ -145,6 +146,52 @@ def test_registrar_si_la_conexion_falla_no_revienta(monkeypatch):
     ok = visitas.registrar_visita("dsn-falso", "7", "2026-09-14", "10:00")
 
     assert ok is False
+
+
+# -- Marcar una visita como cancelada (cancelar_mi_reserva) ---------------------
+
+
+def test_marcar_cancelada_sin_dsn_no_hace_nada():
+    assert visitas.marcar_cancelada("", "7", "2026-09-14", "10:00") is False
+
+
+def test_marcar_cancelada_sin_contacto_id_no_hace_nada(monkeypatch):
+    conexion = _ConexionDeMentira()
+    _psycopg_falso(monkeypatch, conexion)
+
+    assert visitas.marcar_cancelada("dsn-falso", "", "2026-09-14", "10:00") is False
+    assert conexion.ejecutados == []  # ni se conectó
+
+
+def test_marcar_cancelada_ejecuta_el_update_con_los_datos(monkeypatch):
+    conexion = _ConexionDeMentira(rowcount=1)
+    _psycopg_falso(monkeypatch, conexion)
+
+    ok = visitas.marcar_cancelada("dsn-falso", "7", "2026-09-14", "10:00")
+
+    assert ok is True
+    assert len(conexion.ejecutados) == 1
+    sql, params = conexion.ejecutados[0]
+    assert "UPDATE visitas" in sql
+    assert "SET cancelado = TRUE" in sql
+    assert params == ("7", "2026-09-14", "10:00")
+
+
+def test_marcar_cancelada_sin_ninguna_fila_que_calce_devuelve_false(monkeypatch):
+    """No había ninguna visita registrada para ese turno (por ejemplo,
+    Postgres no estaba configurado cuando se confirmó) — no hay qué
+    marcar, y no es un error."""
+    conexion = _ConexionDeMentira(rowcount=0)
+    _psycopg_falso(monkeypatch, conexion)
+
+    assert visitas.marcar_cancelada("dsn-falso", "7", "2026-09-14", "10:00") is False
+
+
+def test_marcar_cancelada_si_la_conexion_falla_no_revienta(monkeypatch):
+    conexion = _ConexionDeMentira(rompe=True)
+    _psycopg_falso(monkeypatch, conexion)
+
+    assert visitas.marcar_cancelada("dsn-falso", "7", "2026-09-14", "10:00") is False
 
 
 # -- El resumen mensual (para /estadisticas) -------------------------------------
@@ -201,8 +248,12 @@ def test_listar_sin_dsn_devuelve_lista_vacia():
 def test_listar_arma_los_diccionarios_con_las_filas(monkeypatch):
     conexion = _ConexionDeMentira(
         filas_a_devolver=[
-            ("Ana", "+351900000000", "Dolor de espalda", "2026-09-14", "09:00", True),
-            ("Ana", "+351900000000", "", "2026-03-02", "10:00", False),
+            ("Ana", "+351900000000", "Dolor de espalda", "2026-09-14", "09:00", False, True),
+            ("Ana", "+351900000000", "", "2026-03-02", "10:00", False, False),
+            # Una cancelada: cancelado=True, es_nueva siempre False para
+            # estas (ver marcar_cancelada/resumen_mensual — no cuentan
+            # como la primera visita de nadie).
+            ("Juan", "+351911111111", "", "2026-02-01", "11:00", True, False),
         ]
     )
     _psycopg_falso(monkeypatch, conexion)
@@ -216,6 +267,7 @@ def test_listar_arma_los_diccionarios_con_las_filas(monkeypatch):
             "motivo": "Dolor de espalda",
             "fecha": "2026-09-14",
             "hora": "09:00",
+            "cancelado": False,
             "es_nueva": True,
         },
         {
@@ -224,6 +276,16 @@ def test_listar_arma_los_diccionarios_con_las_filas(monkeypatch):
             "motivo": "",
             "fecha": "2026-03-02",
             "hora": "10:00",
+            "cancelado": False,
+            "es_nueva": False,
+        },
+        {
+            "nombre": "Juan",
+            "telefono": "+351911111111",
+            "motivo": "",
+            "fecha": "2026-02-01",
+            "hora": "11:00",
+            "cancelado": True,
             "es_nueva": False,
         },
     ]

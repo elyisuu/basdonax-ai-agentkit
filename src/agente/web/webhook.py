@@ -151,8 +151,12 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
             f"<td>{escape(v['telefono']) or '—'}</td>"
             f"<td>{escape(v['motivo']) or '—'}</td>"
             f"<td>{escape(v['fecha'])}</td><td>{escape(v['hora'])}</td>"
-            f"<td><span class=\"chip {'nueva' if v['es_nueva'] else 'recurrente'}\">"
-            f"{'Nueva' if v['es_nueva'] else 'Recurrente'}</span></td></tr>"
+            + (
+                '<td><span class="chip cancelada">Cancelada</span></td></tr>'
+                if v["cancelado"]
+                else f"<td><span class=\"chip {'nueva' if v['es_nueva'] else 'recurrente'}\">"
+                f"{'Nueva' if v['es_nueva'] else 'Recurrente'}</span></td></tr>"
+            )
             for v in detalle
         )
 
@@ -214,6 +218,7 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
   .chip {{ display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .78rem; font-weight: 600; }}
   .chip.nueva {{ background: var(--acento-suave); color: var(--acento); }}
   .chip.recurrente {{ background: #eef1f5; color: var(--recurrente-texto); }}
+  .chip.cancelada {{ background: #fbe9e9; color: #a23c3c; }}
 </style>
 </head>
 <body>

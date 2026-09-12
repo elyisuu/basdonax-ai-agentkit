@@ -123,6 +123,7 @@ def test_el_detalle_muestra_nombre_telefono_y_si_es_nueva(monkeypatch):
                 "motivo": "Esguince de tobillo",
                 "fecha": "2026-09-14",
                 "hora": "09:00",
+                "cancelado": False,
                 "es_nueva": True,
             },
             {
@@ -131,6 +132,7 @@ def test_el_detalle_muestra_nombre_telefono_y_si_es_nueva(monkeypatch):
                 "motivo": "",
                 "fecha": "2026-09-10",
                 "hora": "17:00",
+                "cancelado": False,
                 "es_nueva": False,
             },
         ],
@@ -146,6 +148,35 @@ def test_el_detalle_muestra_nombre_telefono_y_si_es_nueva(monkeypatch):
     assert "Nueva" in respuesta.text
     assert "Recurrente" in respuesta.text
     assert "Ricardo" in respuesta.text
+
+
+def test_el_detalle_marca_una_visita_cancelada(monkeypatch):
+    """cancelar_mi_reserva (herramientas.py) marca la visita como
+    cancelada — acá se ve que /estadisticas la muestra distinta (no como
+    Nueva ni Recurrente, aunque `es_nueva` venga en False)."""
+    web, _ = _armar()
+    monkeypatch.setattr(webhook_modulo.visitas, "resumen_mensual", lambda dsn: [])
+    monkeypatch.setattr(
+        webhook_modulo.visitas,
+        "listar_visitas",
+        lambda dsn: [
+            {
+                "nombre": "Antonio",
+                "telefono": "+351964587322",
+                "motivo": "",
+                "fecha": "2026-09-14",
+                "hora": "09:00",
+                "cancelado": True,
+                "es_nueva": False,
+            }
+        ],
+    )
+
+    with web as w:
+        respuesta = w.get("/estadisticas?token=shhh-stats")
+
+    assert "Cancelada" in respuesta.text
+    assert "chip cancelada" in respuesta.text
 
 
 def test_un_nombre_con_html_no_se_ejecuta(monkeypatch):
@@ -164,6 +195,7 @@ def test_un_nombre_con_html_no_se_ejecuta(monkeypatch):
                 "motivo": "",
                 "fecha": "2026-09-14",
                 "hora": "09:00",
+                "cancelado": False,
                 "es_nueva": True,
             }
         ],
@@ -191,6 +223,7 @@ def test_un_motivo_con_html_no_se_ejecuta(monkeypatch):
                 "motivo": "<img src=x onerror=alert(1)>",
                 "fecha": "2026-09-14",
                 "hora": "09:00",
+                "cancelado": False,
                 "es_nueva": True,
             }
         ],

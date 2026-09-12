@@ -1077,6 +1077,61 @@ def test_cancelar_mi_reserva_la_encuentra_y_cancela(monkeypatch):
     assert chatwoot.etiquetas == [("42", herramientas.ETIQUETA_RESERVA_CANCELADA)]
 
 
+def test_cancelar_mi_reserva_marca_la_visita_cancelada(monkeypatch):
+    """Sin esto, /estadisticas seguía contando el turno como si la persona
+    hubiera venido, aunque haya cancelado (ver visitas.py,
+    marcar_cancelada)."""
+    cal = _CalendarioDeMentira()
+    chatwoot = _ChatwootDeMentira(contacto_id="99")
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    monkeypatch.setattr(
+        herramientas,
+        "_ajustes_del_config",
+        lambda config: _AjustesDeMentira(postgres_dsn="dsn-falso"),
+    )
+    llamadas = []
+    monkeypatch.setattr(
+        herramientas.visitas,
+        "marcar_cancelada",
+        lambda *a, **k: llamadas.append((a, k)),
+    )
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan", inicio, fin)
+
+    cancelar_mi_reserva.invoke({"fecha": "2026-09-12", "hora": "20:00"}, config=_config())
+
+    assert llamadas == [(("dsn-falso", "99", "2026-09-12", "20:00"), {})]
+
+
+def test_cancelar_mi_reserva_sin_contacto_no_marca_ninguna_visita(monkeypatch):
+    """Mismo criterio que anotar_reserva: sin poder identificar a la
+    persona no hay qué marcar — pero eso no puede voltear la cancelación,
+    que sí es real (el calendario ya se tocó)."""
+    cal = _CalendarioDeMentira()
+    chatwoot = _ChatwootDeMentira(contacto_id=None)
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: chatwoot)
+    llamadas = []
+    monkeypatch.setattr(
+        herramientas.visitas,
+        "marcar_cancelada",
+        lambda *a, **k: llamadas.append((a, k)),
+    )
+
+    inicio, fin = cal.rango("2026-09-12", "20:00", 60)
+    cal.crear_evento("Juan (2p)", "Nombre: Juan", inicio, fin)
+
+    resultado = cancelar_mi_reserva.invoke(
+        {"fecha": "2026-09-12", "hora": "20:00"}, config=_config()
+    )
+
+    assert "cancelé" in resultado.lower(), "la cancelación real no se cae por esto"
+    assert cal.cancelados == ["evento-1"]
+    assert llamadas == []
+
+
 def test_cancelar_mi_reserva_no_toca_el_turno_de_otra_conversacion(monkeypatch):
     cal = _CalendarioDeMentira()
     monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)

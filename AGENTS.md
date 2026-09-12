@@ -725,6 +725,16 @@ registro corre siempre, en código:
 - La ruta `/reservas/aprobar` (`web/webhook.py`) la registra cuando el
   negocio aprueba una reserva `"tentative"` — nunca al crearla, para no
   contar turnos que después se rechazan.
+- `cancelar_mi_reserva()` (`herramientas.py`) la marca como cancelada
+  (`visitas.marcar_cancelada()`) cuando la persona cancela un turno que ya
+  había quedado confirmado — así no se sigue contando como si hubiera
+  venido. Encontrado el 12 sep 2026 grabando una demo: no había ningún
+  código que hiciera esto, una visita quedaba contada para siempre aunque
+  se cancelara. `reprogramar_mi_reserva()` **no** la toca todavía: la
+  fecha/hora del registro queda la vieja si alguien mueve el turno (no es
+  lo mismo que cancelar — la persona sí viene, solo que en otro momento —
+  pero el detalle de `/estadisticas` le va a mostrar la fecha original,
+  no la nueva).
 - La tabla se crea sola al arrancar (`visitas.preparar()`, en el
   `ciclo_de_vida` de `web/webhook.py`), mismo momento en que
   `PostgresSaver.setup()` arma las suyas para la memoria.
@@ -756,11 +766,16 @@ alguien adivine cualquier token.
 
 - **Resumen por mes** — `visitas.py: resumen_mensual()` (un `ROW_NUMBER()`
   por `contacto_id`: la primera visita de cada persona es "nueva", el
-  resto "recurrente").
+  resto "recurrente"). Una visita cancelada **no** entra en este conteo —
+  ni en el total, ni como la "primera visita" que definiría a una
+  posterior como recurrente.
 - **Detalle turno por turno** — `visitas.py: listar_visitas()`: nombre,
   teléfono, **motivo de consulta**, fecha, hora y si fue la primera vez,
   los últimos 200 por default (`limite`). Es lo que le permite al dueño
-  responder "¿quién vino esta semana?", no solo "¿cuántos?".
+  responder "¿quién vino esta semana?", no solo "¿cuántos?". Acá sí
+  aparecen las canceladas (a diferencia del resumen mensual): mejor que el
+  dueño vea que alguien canceló, no que desaparezca sin dejar rastro — se
+  distinguen con un chip "Cancelada" en vez de "Nueva"/"Recurrente".
 
 **El motivo (`aclaracion` en `anotar_reserva`) se agregó después que el
 resto de la tabla** — la columna se suma con `ALTER TABLE ... ADD COLUMN
