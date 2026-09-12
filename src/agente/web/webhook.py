@@ -633,6 +633,19 @@ def crear_app(
                 else:
                     if evento is None:
                         mensaje = "Esta reserva ya había sido rechazada antes."
+                    elif evento.get("status") == "confirmed":
+                        # Simétrico al chequeo de "aprobar" de arriba.
+                        # Reproducible: Chatwoot manda los dos links juntos
+                        # (aprobar y rechazar) en la misma nota — si ya se
+                        # aprobó una reserva y alguien toca el otro link por
+                        # error, sin este chequeo se cancela un turno que el
+                        # cliente ya sabe confirmado, y encima le llega un
+                        # WhatsApp diciéndole que no se lo puede atender.
+                        mensaje = (
+                            "Esta reserva ya está confirmada, no se puede "
+                            "rechazar por este link. Para cancelarla, hay "
+                            "que hacerlo directo desde Google Calendar."
+                        )
                     else:
                         await asyncio.to_thread(agenda.cancelar_evento, evento_id)
                         aviso = await asyncio.to_thread(

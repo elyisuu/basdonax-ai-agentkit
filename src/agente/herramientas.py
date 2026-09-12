@@ -75,8 +75,10 @@ requirements.txt por dos pedidos HTTP.
 from __future__ import annotations
 
 import json
+import threading
 import urllib.parse
 import urllib.request
+from collections import defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -87,6 +89,19 @@ from . import alertas, aprobacion, horario, visitas
 from .calendario import Calendario, conversacion_del_evento
 from .canales.chatwoot import Chatwoot
 from .config import Config
+
+# Un candado por calendario (no por horario puntual: dos franjas que se
+# superponen sin ser idénticas —10:00-10:30 y 10:15-10:45— igual tienen
+# que serializarse, y por calendario entero es lo más simple que cubre
+# eso). anotar_reserva/reprogramar_mi_reserva corren en threads distintos
+# por conversación (cada una vía asyncio.to_thread, ver web/webhook.py) —
+# sin este candado, dos personas pidiendo el mismo horario casi al mismo
+# tiempo pueden las dos pasar "¿está libre?" antes de que cualquiera
+# termine de crear el evento, y quedan dos reservas pisadas en la misma
+# franja. Es threading.Lock, no asyncio.Lock: el código de este archivo
+# corre sync, adentro del thread que le tocó — un asyncio.Lock no
+# serializa nada entre threads distintos.
+_candados_calendario: dict[str, threading.Lock] = defaultdict(threading.Lock)
 
 GEOCODING = "https://geocoding-api.open-meteo.com/v1/search"
 PRONOSTICO = "https://api.open-meteo.com/v1/forecast"
@@ -356,22 +371,26 @@ def anotar_reserva(
         if calendario is not None:
             inicio, fin = calendario.rango(fecha, hora, duracion_minutos)
 
-            if calendario.se_superpone(inicio, fin):
-                return (
-                    f"Ese horario ({fecha} {hora}) ya está ocupado en el "
-                    "calendario. Ofrecele otro a la persona — podés "
-                    "consultar franjas_ocupadas de nuevo para ese día."
+            # "¿Está libre?" y "crearlo" tienen que ser una sola operación
+            # de cara a otra conversación pidiendo el mismo horario — ver
+            # _candados_calendario, arriba.
+            with _candados_calendario[calendario.calendario_id]:
+                if calendario.se_superpone(inicio, fin):
+                    return (
+                        f"Ese horario ({fecha} {hora}) ya está ocupado en el "
+                        "calendario. Ofrecele otro a la persona — podés "
+                        "consultar franjas_ocupadas de nuevo para ese día."
+                    )
+
+                requiere_aprobacion = ajustes.reserva_requiere_aprobacion
+
+                evento = calendario.crear_evento(
+                    titulo=f"{nombre} ({personas}p)",
+                    descripcion=descripcion_calendario,
+                    inicio=inicio,
+                    fin=fin,
+                    estado="tentative" if requiere_aprobacion else "confirmed",
                 )
-
-            requiere_aprobacion = ajustes.reserva_requiere_aprobacion
-
-            evento = calendario.crear_evento(
-                titulo=f"{nombre} ({personas}p)",
-                descripcion=descripcion_calendario,
-                inicio=inicio,
-                fin=fin,
-                estado="tentative" if requiere_aprobacion else "confirmed",
-            )
 
             if requiere_aprobacion:
                 evento_pendiente_id = evento.get("id")
@@ -556,23 +575,27 @@ def reprogramar_mi_reserva(
         duracion = _duracion_minutos(evento)
         inicio_nuevo, fin_nuevo = calendario.rango(fecha_nueva, hora_nueva, duracion)
 
-        if calendario.se_superpone(inicio_nuevo, fin_nuevo):
-            return (
-                f"Ese horario nuevo ({fecha_nueva} {hora_nueva}) ya está "
-                "ocupado. Ofrecele otro a la persona."
-            )
+        # Mismo candado que anotar_reserva: "¿está libre el horario nuevo?"
+        # y "crearlo" tienen que ser una sola operación de cara a otra
+        # conversación pidiendo ese mismo horario (ver _candados_calendario).
+        with _candados_calendario[calendario.calendario_id]:
+            if calendario.se_superpone(inicio_nuevo, fin_nuevo):
+                return (
+                    f"Ese horario nuevo ({fecha_nueva} {hora_nueva}) ya está "
+                    "ocupado. Ofrecele otro a la persona."
+                )
 
-        # Cancelar y crear de nuevo, no "mover": la API de Calendar no
-        # tiene un PATCH atómico para start/end que además re-chequee
-        # freeBusy, así que el chequeo de arriba y esto son dos pasos.
-        calendario.cancelar_evento(evento["id"])
-        calendario.crear_evento(
-            titulo=evento.get("summary", ""),
-            descripcion=evento.get("description", ""),
-            inicio=inicio_nuevo,
-            fin=fin_nuevo,
-            estado=evento.get("status", "confirmed"),
-        )
+            # Cancelar y crear de nuevo, no "mover": la API de Calendar no
+            # tiene un PATCH atómico para start/end que además re-chequee
+            # freeBusy, así que el chequeo de arriba y esto son dos pasos.
+            calendario.cancelar_evento(evento["id"])
+            calendario.crear_evento(
+                titulo=evento.get("summary", ""),
+                descripcion=evento.get("description", ""),
+                inicio=inicio_nuevo,
+                fin=fin_nuevo,
+                estado=evento.get("status", "confirmed"),
+            )
     except Exception as e:
         return f"No se pudo reprogramar la reserva: {type(e).__name__}: {e}"
 

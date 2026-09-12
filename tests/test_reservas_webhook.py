@@ -327,6 +327,25 @@ def test_aprobar_algo_ya_rechazado_no_lo_revive():
     assert len(canal.envios()) == 1, "solo el aviso del rechazo"
 
 
+def test_rechazar_algo_ya_aprobado_no_lo_cancela():
+    """Simétrico al de arriba: Chatwoot manda los dos links (aprobar y
+    rechazar) juntos en la misma nota. Si ya se aprobó y alguien toca el
+    de rechazar por error, no tiene que cancelar un turno que el cliente
+    ya sabe confirmado ni mandarle un WhatsApp contradictorio."""
+    web, canal, calendario = _armar()
+    token_aprobar = aprobacion.firmar("shhh", "42", "evento-1")
+    token_rechazar = aprobacion.firmar("shhh", "42", "evento-1")
+
+    with web as w:
+        w.get(f"/reservas/aprobar/42/evento-1?token={token_aprobar}")
+        respuesta = w.get(f"/reservas/rechazar/42/evento-1?token={token_rechazar}")
+
+    assert respuesta.status_code == 200
+    assert "ya está confirmada" in respuesta.text.lower()
+    assert calendario.cancelados == [], "no se cancela un turno ya aprobado"
+    assert len(canal.envios()) == 1, "solo el aviso de la aprobación"
+
+
 def test_accion_desconocida_da_404():
     web, canal, calendario = _armar()
     token = aprobacion.firmar("shhh", "42", "evento-1")

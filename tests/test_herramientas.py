@@ -10,6 +10,8 @@ de ellos ande.
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -176,9 +178,10 @@ class _ChatwootDeMentira:
 
 
 class _CalendarioDeMentira:
-    def __init__(self, ocupado=None, libre=True) -> None:
+    def __init__(self, ocupado=None, libre=True, calendario_id="cal-de-mentira") -> None:
         self._ocupado = ocupado or []
         self._libre = libre
+        self.calendario_id = calendario_id  # anotar_reserva lo usa como clave del candado
         self.eventos: list[dict] = []  # solo los "vivos" (no cancelados)
         self.aprobados: list[str] = []
         self.cancelados: list[str] = []
@@ -542,6 +545,78 @@ def test_con_calendario_ocupado_no_confirma_y_no_crea_el_evento(monkeypatch):
 
     assert "ocupado" in resultado.lower()
     assert not cal.eventos, "no tiene que crear nada si el horario está tomado"
+
+
+class _CalendarioConcurrente:
+    """A diferencia de _CalendarioDeMentira (un flag fijo `libre`), este
+    mira lo que YA se creó de verdad — como el Calendar real — y demora un
+    poco tanto el chequeo como la creación, para agrandar a propósito la
+    ventana de la carrera (mismo motivo que _CalendarioLenta en
+    test_reservas_webhook.py). Sin la demora, dos threads de test podrían
+    turnarse por pura casualidad y el test no probaría nada."""
+
+    def __init__(self) -> None:
+        self.calendario_id = "cal-concurrente"
+        self.eventos: list[dict] = []
+        self._candado_interno = threading.Lock()  # protege self.eventos en sí, no la lógica
+
+    def rango(self, fecha, hora, duracion_minutos):
+        inicio = datetime.strptime(f"{fecha} {hora}", "%Y-%m-%d %H:%M")
+        return inicio, inicio + timedelta(minutes=duracion_minutos)
+
+    def se_superpone(self, inicio, fin):
+        time.sleep(0.05)
+        with self._candado_interno:
+            return any(e["inicio"] == inicio for e in self.eventos)
+
+    def crear_evento(self, titulo, descripcion, inicio, fin, estado="confirmed"):
+        time.sleep(0.05)
+        evento = {"id": f"evento-{len(self.eventos) + 1}", "inicio": inicio}
+        with self._candado_interno:
+            self.eventos.append(evento)
+        return evento
+
+
+def test_dos_reservas_casi_simultaneas_del_mismo_horario_no_se_pisan(monkeypatch):
+    """Reproducible: dos conversaciones distintas (dos personas) pidiendo
+    el mismo horario casi al mismo tiempo. Sin el candado de
+    _candados_calendario, las dos pueden pasar "¿está libre?" antes de que
+    cualquiera termine de crear el evento, y quedan dos reservas pisadas
+    en la misma franja."""
+    cal = _CalendarioConcurrente()
+    monkeypatch.setattr(herramientas, "_calendario_del_config", lambda config: cal)
+    monkeypatch.setattr(herramientas, "_chatwoot_del_config", lambda config: None)
+
+    resultados: list[str] = []
+
+    def _pedir(nombre, thread_id):
+        resultados.append(
+            anotar_reserva.invoke(
+                {
+                    "nombre": nombre,
+                    "personas": 1,
+                    "fecha": "2026-09-12",
+                    "hora": "10:00",
+                },
+                config=_config(thread_id=thread_id),
+            )
+        )
+
+    hilos = [
+        threading.Thread(target=_pedir, args=("Ana", "42")),
+        threading.Thread(target=_pedir, args=("Beto", "99")),
+    ]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+
+    confirmados = [r for r in resultados if "confirmado" in r.lower()]
+    ocupados = [r for r in resultados if "ocupado" in r.lower()]
+
+    assert len(cal.eventos) == 1, "no se puede crear dos eventos en el mismo horario"
+    assert len(confirmados) == 1, "una sola de las dos reservas tiene que confirmarse"
+    assert len(ocupados) == 1, "a la otra persona hay que avisarle que ya no está libre"
 
 
 def test_si_falla_el_calendario_no_se_avisa_reserva_pendiente(monkeypatch):

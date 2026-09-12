@@ -825,6 +825,36 @@ la pantalla que abre el dueño del negocio. El resumen mensual no necesita
 esto: `mes` sale de `to_char()` en la propia consulta, no de lo que
 alguien tipeó.
 
+## Candados contra condiciones de carrera
+
+Dos lugares donde "leer el estado → decidir → escribir" no alcanza por sí
+solo si dos pedidos llegan casi al mismo tiempo — encontrados los dos en
+producción, no en teoría:
+
+- **`web/webhook.py`, `/reservas/{accion}`** (`candados_reserva`, un
+  `asyncio.Lock` por `conversación:evento_id`): sin esto, la app de
+  Chatwoot precargando el link + el clic real de la persona (o dos clics
+  del negocio) pueden los dos leer "todavía no confirmado" antes de que
+  cualquiera termine de escribirlo — reproducido en vivo, un solo clic,
+  dos avisos de "turno confirmado" por WhatsApp.
+- **`herramientas.py`, `anotar_reserva`/`reprogramar_mi_reserva`**
+  (`_candados_calendario`, un `threading.Lock` por calendario): sin esto,
+  dos conversaciones distintas (dos personas) pidiendo el mismo horario
+  casi al mismo tiempo pueden las dos pasar "¿está libre?" antes de que
+  cualquiera termine de crear el evento, y quedan dos reservas pisadas en
+  la misma franja.
+
+**Por qué `threading.Lock` en uno y `asyncio.Lock` en el otro:**
+`web/webhook.py` es todo `async def` — sus candados tienen que ser
+`asyncio.Lock`, que solo sirve entre corrutinas del mismo event loop.
+`herramientas.py` corre código sync de siempre, llamado desde adentro de
+un `asyncio.to_thread(...)` (ver `responder()` en `web/webhook.py`) — ahí
+lo que hay que serializar son **threads del sistema operativo**, y un
+`asyncio.Lock` no protege nada entre threads distintos. Mezclar los dos
+tipos de candado, o usar el equivocado en cada lado, no avisa ningún
+error: simplemente no serializa nada y la condición de carrera sigue
+intacta — por eso vale la pena tenerlo escrito acá.
+
 ## Reintentos en Chatwoot y Google Calendar
 
 `reintentos.py` — un timeout de red pasajero (una conexión que se corta a
