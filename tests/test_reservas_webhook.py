@@ -7,7 +7,9 @@ internet ni gastan tokens.
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -49,6 +51,30 @@ class _CalendarioDeMentira:
     def cancelar_evento(self, evento_id):
         self.cancelados.append(evento_id)
         self.eventos[evento_id] = None
+
+
+class _CalendarioLenta(_CalendarioDeMentira):
+    """Igual que la de mentira, pero `aprobar_evento`/`cancelar_evento`
+    tardan un poco — como el PATCH/DELETE real contra la API de Calendar.
+
+    A propósito, para agrandar la ventana de la carrera en
+    test_dos_aprobar_casi_simultaneos_no_repiten_el_whatsapp. La demora
+    tiene que estar ACÁ, no en `obtener_evento`: el momento vulnerable es
+    entre "leí tentative" y "ya escribí confirmed" — demorar la LECTURA
+    solo demuestra que dos lecturas pueden ser concurrentes, no que el
+    candado hace falta (verificado a mano: con la demora en la lectura, la
+    escritura de la primera solicitud termina tan rápido que la segunda
+    nunca alcanza a leer el estado viejo, y el test "pasa" sin que el
+    candado haga nada — un falso negativo).
+    """
+
+    def aprobar_evento(self, evento_id):
+        time.sleep(0.1)
+        super().aprobar_evento(evento_id)
+
+    def cancelar_evento(self, evento_id):
+        time.sleep(0.1)
+        super().cancelar_evento(evento_id)
 
 
 def _armar(secreto="shhh"):
@@ -232,6 +258,42 @@ def test_aprobar_dos_veces_no_repite_el_whatsapp():
     assert segunda.status_code == 200
     assert "ya estaba aprobada" in segunda.text.lower()
     assert calendario.aprobados == ["evento-1"], "no se vuelve a aprobar"
+    assert len(canal.envios()) == 1, "no se manda el WhatsApp dos veces"
+
+
+def test_dos_aprobar_casi_simultaneos_no_repiten_el_whatsapp():
+    """Reproducido en vivo: un solo clic en el link desde la app de Chatwoot
+    en el celular, y llegaron DOS avisos de "tu turno quedó confirmado" —
+    dos GET casi al mismo tiempo (la vista previa del link que arma la app +
+    el clic real de la persona) pasaron el chequeo de "¿ya está confirmado?"
+    antes de que cualquiera de los dos terminara de escribirlo.
+    `test_aprobar_dos_veces_no_repite_el_whatsapp` ya cubre el caso
+    SECUENCIAL (un clic después del otro); este cubre el caso simultáneo, que
+    es el que de verdad pasó — por eso `_CalendarioLenta`, para agrandar a
+    propósito la ventana de la carrera y que el test falle de verdad si el
+    candado se saca alguna vez."""
+    import httpx
+
+    from agente.web.webhook import crear_app
+
+    canal = ChatwootFalso()
+    calendario = _CalendarioLenta()
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+
+    app = crear_app(agente.config, agente=agente, canal=canal, calendario=calendario)
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+    url = f"/reservas/aprobar/42/evento-1?token={token}"
+
+    async def correr():
+        transporte = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transporte, base_url="http://test") as c:
+            return await asyncio.gather(c.get(url), c.get(url))
+
+    respuestas = asyncio.run(correr())
+
+    assert [r.status_code for r in respuestas] == [200, 200]
+    assert calendario.aprobados == ["evento-1"], "no se aprueba dos veces"
     assert len(canal.envios()) == 1, "no se manda el WhatsApp dos veces"
 
 
@@ -441,3 +503,54 @@ def test_aprobar_con_profesionales_y_nombre_que_no_coincide_da_404(monkeypatch):
         respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}&profesional=Dr.%20Nadie")
 
     assert respuesta.status_code == 404
+
+
+# -- _mensaje_en_idioma_de_conversacion -------------------------------------------
+#
+# El bug real: una conversación entera en portugués, y el aviso de "tu turno
+# quedó confirmado" salía en español — porque ese aviso no pasa por el
+# agente, es un texto fijo que dispara /reservas/{accion} directo.
+
+
+def test_mensaje_en_idioma_sin_historial_devuelve_el_texto_tal_cual():
+    """Conversación que nunca le habló al agente (no debería pasar en la
+    práctica, pero el helper no tiene por qué explotar): sin nada de
+    historial no hay de dónde sacar el idioma, así que se manda el texto
+    fijo tal cual viene — y sin gastar un llamado al modelo (la respuesta
+    "no debería usarse" no se toca)."""
+    agente = agente_falso(["no debería usarse"])
+
+    resultado = webhook_modulo._mensaje_en_idioma_de_conversacion(
+        agente, "sin-historial", "Tu turno quedó confirmado."
+    )
+
+    assert resultado == "Tu turno quedó confirmado."
+
+
+def test_mensaje_en_idioma_traduce_usando_el_historial_de_la_conversacion():
+    """Con historial en portugués, el helper le pide al modelo que traduzca
+    — y devuelve lo que el modelo conteste, sin tocar la memoria real de la
+    conversación (agente.modelo, no agente.grafo)."""
+    agente = agente_falso(
+        ["Claro, deixe-me ver os horários disponíveis.", "O seu turno ficou confirmado!"]
+    )
+    agente.responder("Ola, queria marcar uma consulta", "42")
+
+    resultado = webhook_modulo._mensaje_en_idioma_de_conversacion(
+        agente, "42", "Tu turno quedó confirmado."
+    )
+
+    assert resultado == "O seu turno ficou confirmado!"
+
+
+def test_mensaje_en_idioma_si_el_modelo_falla_devuelve_el_texto_tal_cual():
+    """Sin internet, sin cupo, lo que sea: mejor mandar el aviso en español
+    que no mandar nada."""
+    agente = agente_falso(["Claro, deixe-me ver os horários disponíveis."])
+    agente.responder("Ola, queria marcar uma consulta", "42")  # consume la única respuesta
+
+    resultado = webhook_modulo._mensaje_en_idioma_de_conversacion(
+        agente, "42", "Tu turno quedó confirmado."
+    )
+
+    assert resultado == "Tu turno quedó confirmado."

@@ -35,6 +35,7 @@ from html import escape
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from .. import alertas, aprobacion, visitas
 from ..agente import Agente
@@ -318,6 +319,54 @@ def _calendario_para_aprobacion(
     return None
 
 
+def _mensaje_en_idioma_de_conversacion(
+    agente: Agente, conversacion: str, texto_es: str
+) -> str:
+    """Traduce un aviso fijo al idioma en que viene hablando esta conversación.
+
+    Los mensajes de /reservas/{accion} (confirmado, rechazado) no pasan por
+    el agente: no hay ninguna pregunta que responder, es un aviso que se
+    dispara solo al abrir el link. Si se mandaran tal cual, siempre saldrían
+    en el idioma en que está escrito el código (español), sin importar en
+    qué idioma venía hablando la persona — bug real, reproducido con una
+    conversación entera en portugués recibiendo el aviso de confirmación en
+    español.
+
+    Le pide al MISMO modelo que traduzca, mirando los últimos mensajes de la
+    persona para saber en qué idioma escribir — sin tocar la memoria de la
+    conversación (no pasa por agente.grafo/el checkpointer) ni las
+    herramientas (agente.modelo es el modelo sin bind_tools). Si algo falla
+    (sin internet, historial vacío), se manda el texto en español tal cual:
+    peor es no avisarle nada a la persona.
+    """
+    try:
+        ultimos = [
+            m.content
+            for m in agente.historial(conversacion)
+            if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content
+        ][-4:]
+        if not ultimos:
+            return texto_es
+
+        respuesta = agente.modelo.invoke(
+            [
+                SystemMessage(
+                    "Traducí el siguiente aviso al idioma en el que está "
+                    "escrita esta conversación (mirá los mensajes de abajo "
+                    "para saber cuál es). Si ya está en ese idioma, "
+                    "devolvelo tal cual. Respondé SOLO con el aviso "
+                    "traducido, sin comillas ni explicaciones.\n\n"
+                    "Mensajes de la conversación:\n" + "\n".join(ultimos)
+                ),
+                HumanMessage(texto_es),
+            ]
+        )
+        traducido = respuesta.content if isinstance(respuesta.content, str) else ""
+        return traducido.strip() or texto_es
+    except Exception:
+        return texto_es
+
+
 def crear_app(
     config: Config | None = None,
     agente: Agente | None = None,
@@ -362,6 +411,18 @@ def crear_app(
     # respondieran en paralelo, los dos leerían la memoria en el mismo punto
     # y el segundo pisaría lo que guardó el primero.
     candados: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    # Un candado por reserva, para /reservas/{accion}. Sin esto, dos GET
+    # casi simultáneos al mismo link (la app de Chatwoot en el celular
+    # precargando el link + el clic real de la persona, por ejemplo) pueden
+    # los dos leer el evento como "todavía no confirmado" antes de que
+    # cualquiera de los dos termine de escribirlo — y los dos mandan el
+    # WhatsApp de confirmación. Reproducido en vivo: un solo clic, dos
+    # avisos de "tu turno quedó confirmado". El chequeo de abajo ("¿cómo
+    # está el evento ANTES de tocar nada?") ya existía, pero por su cuenta
+    # no alcanza contra dos pedidos que llegan a la vez — hace falta que el
+    # segundo espere a que el primero termine antes de mirar.
+    candados_reserva: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def responder(conversacion: str, texto: str) -> None:
         """Le pasa la ráfaga al agente y manda la respuesta por Chatwoot."""
@@ -564,54 +625,57 @@ def crear_app(
             return HTMLResponse("Link inválido o vencido.", status_code=403)
 
         try:
-            # ¿Cómo está el evento ANTES de tocar nada? Un 404/410 acá
-            # significa que ya no existe (un rechazo previo lo borró) — no
-            # es un error, es justo lo que se necesita saber para no repetir
-            # la acción. Cualquier otro código sí es un error de verdad y
-            # sube tal cual al except de abajo.
-            try:
-                evento = await asyncio.to_thread(agenda.obtener_evento, evento_id)
-            except ErrorDeCalendario as e:
-                if e.codigo not in (404, 410):
-                    raise
-                evento = None
+            async with candados_reserva[f"{conversacion}:{evento_id}"]:
+                # ¿Cómo está el evento ANTES de tocar nada? Un 404/410 acá
+                # significa que ya no existe (un rechazo previo lo borró) —
+                # no es un error, es justo lo que se necesita saber para no
+                # repetir la acción. Cualquier otro código sí es un error de
+                # verdad y sube tal cual al except de abajo.
+                try:
+                    evento = await asyncio.to_thread(agenda.obtener_evento, evento_id)
+                except ErrorDeCalendario as e:
+                    if e.codigo not in (404, 410):
+                        raise
+                    evento = None
 
-            if accion == "aprobar":
-                if evento is None:
-                    mensaje = "Esta reserva ya no existe (puede que se haya rechazado antes)."
-                elif evento.get("status") == "confirmed":
-                    mensaje = "Esta reserva ya estaba aprobada. No hace falta hacer nada más."
+                if accion == "aprobar":
+                    if evento is None:
+                        mensaje = "Esta reserva ya no existe (puede que se haya rechazado antes)."
+                    elif evento.get("status") == "confirmed":
+                        mensaje = "Esta reserva ya estaba aprobada. No hace falta hacer nada más."
+                    else:
+                        await asyncio.to_thread(agenda.aprobar_evento, evento_id)
+                        aviso = await asyncio.to_thread(
+                            _mensaje_en_idioma_de_conversacion,
+                            agente,
+                            conversacion,
+                            "¡Tu turno quedó confirmado! Te esperamos.",
+                        )
+                        await asyncio.to_thread(canal.enviar, conversacion, [aviso])
+                        await asyncio.to_thread(
+                            canal.etiquetar, conversacion, "reserva-confirmada"
+                        )
+                        await asyncio.to_thread(
+                            _registrar_visita_aprobada, canal, config, conversacion, evento
+                        )
+                        mensaje = "Reserva aprobada. Ya se le avisó a la persona."
                 else:
-                    await asyncio.to_thread(agenda.aprobar_evento, evento_id)
-                    await asyncio.to_thread(
-                        canal.enviar,
-                        conversacion,
-                        ["¡Tu turno quedó confirmado! Te esperamos."],
-                    )
-                    await asyncio.to_thread(
-                        canal.etiquetar, conversacion, "reserva-confirmada"
-                    )
-                    await asyncio.to_thread(
-                        _registrar_visita_aprobada, canal, config, conversacion, evento
-                    )
-                    mensaje = "Reserva aprobada. Ya se le avisó a la persona."
-            else:
-                if evento is None:
-                    mensaje = "Esta reserva ya había sido rechazada antes."
-                else:
-                    await asyncio.to_thread(agenda.cancelar_evento, evento_id)
-                    await asyncio.to_thread(
-                        canal.enviar,
-                        conversacion,
-                        [
+                    if evento is None:
+                        mensaje = "Esta reserva ya había sido rechazada antes."
+                    else:
+                        await asyncio.to_thread(agenda.cancelar_evento, evento_id)
+                        aviso = await asyncio.to_thread(
+                            _mensaje_en_idioma_de_conversacion,
+                            agente,
+                            conversacion,
                             "Por ese horario no vamos a poder atenderte, "
-                            "disculpá. Escribinos para coordinar otro."
-                        ],
-                    )
-                    await asyncio.to_thread(
-                        canal.etiquetar, conversacion, "reserva-rechazada"
-                    )
-                    mensaje = "Reserva rechazada. Ya se le avisó a la persona."
+                            "disculpá. Escribinos para coordinar otro.",
+                        )
+                        await asyncio.to_thread(canal.enviar, conversacion, [aviso])
+                        await asyncio.to_thread(
+                            canal.etiquetar, conversacion, "reserva-rechazada"
+                        )
+                        mensaje = "Reserva rechazada. Ya se le avisó a la persona."
         except Exception as e:
             registro.error("[%s] error al %s la reserva: %s", conversacion, accion, e)
             return HTMLResponse(
