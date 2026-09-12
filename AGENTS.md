@@ -788,6 +788,16 @@ que `/reservas/{accion}`: un secreto fijo en la URL (`DASHBOARD_SECRETO`),
 no una pantalla de login — sin esa variable puesta, la ruta da 404 aunque
 alguien adivine cualquier token.
 
+**El idioma de esta pantalla (y el de `/reservas/{accion}`, "Listo",
+"Reserva aprobada"...) es `IDIOMA_PANEL`** (`config.py`, `es`/`pt`/`en`,
+default `es`) — `web/textos_panel.py` tiene los tres juegos de textos. Es
+un idioma FIJO por instancia, elegido a mano en el `.env` (ver
+`ALTA_DE_CLIENTE.md`), no algo que se detecte solo: a diferencia de los
+avisos al cliente final (`mensajes.py`), acá no hay ninguna conversación
+de la que sacar el idioma — es el DUEÑO del negocio quien abre estos
+links, una sola persona (o un equipo chico) cuyo idioma ya se sabe de
+antemano al darlo de alta.
+
 - **Resumen por mes** — `visitas.py: resumen_mensual()` (un `ROW_NUMBER()`
   por `contacto_id`: la primera visita de cada persona es "nueva", el
   resto "recurrente"). Una visita cancelada **no** entra en este conteo —

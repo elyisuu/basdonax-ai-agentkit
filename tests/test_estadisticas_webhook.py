@@ -57,6 +57,23 @@ def test_sin_dashboard_secreto_configurado_da_404():
     assert respuesta.status_code == 404
 
 
+def test_la_pagina_respeta_idioma_panel(monkeypatch):
+    """/estadisticas es lo que ve el DUEÑO del negocio — con
+    IDIOMA_PANEL=en tiene que salir en inglés."""
+    web, agente = _armar()
+    agente.config.idioma_panel = "en"
+    monkeypatch.setattr(webhook_modulo.visitas, "resumen_mensual", lambda dsn: [])
+    monkeypatch.setattr(webhook_modulo.visitas, "listar_visitas", lambda dsn: [])
+
+    with web as w:
+        respuesta = w.get("/estadisticas?token=shhh-stats")
+
+    assert "<title>Statistics</title>" in respuesta.text
+    assert "All-time total" in respuesta.text
+    assert "No appointments recorded yet." in respuesta.text
+    assert "Estadísticas" not in respuesta.text
+
+
 def _sin_detalle(monkeypatch):
     """La mayoría de los tests de acá no les importa la tabla de detalle —
     la dejan vacía para no tener que armarla cada vez."""

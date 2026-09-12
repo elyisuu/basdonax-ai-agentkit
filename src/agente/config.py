@@ -150,6 +150,16 @@ class Config:
     # Sin esto puesto, /estadisticas da 404 — nadie puede verlas por accidente.
     dashboard_secreto: str = ""
 
+    # El idioma de /estadisticas y de la pantalla de /reservas/{accion}
+    # ("Listo", "Reserva aprobada"...) — lo que ve el DUEÑO del negocio, no
+    # el cliente final (eso ya se traduce solo, ver mensajes.py). "es" por
+    # default porque es el idioma del resto del repo; con un cliente que
+    # habla otra cosa (portugués, inglés) se pone acá una sola vez, al dar
+    # de alta esa instancia. Un valor que no sea "es"/"pt"/"en" cae a "es"
+    # sin romper nada — mismo criterio permisivo que el resto de este
+    # archivo con una variable mal escrita.
+    idioma_panel: str = "es"
+
     @classmethod
     def desde_entorno(
         cls, proveedor: str | None = None, modelo: str | None = None
@@ -233,6 +243,7 @@ class Config:
             recordatorio_horas_antes=_entero("RECORDATORIO_HORAS_ANTES", 24),
             recordatorio_ventana_minutos=_entero("RECORDATORIO_VENTANA_MINUTOS", 60),
             dashboard_secreto=(os.getenv("DASHBOARD_SECRETO") or "").strip(),
+            idioma_panel=_idioma_panel(),
         )
 
 
@@ -329,6 +340,18 @@ def _booleano(nombre: str, por_defecto: bool) -> bool:
     if not valor:
         return por_defecto
     return valor in ("1", "true", "si", "sí", "on", "yes")
+
+
+IDIOMAS_PANEL = ("es", "pt", "en")
+
+
+def _idioma_panel() -> str:
+    """"es"/"pt"/"en", sin importar mayúsculas. Cualquier otra cosa (vacío
+    incluido) cae a "es" sin avisar — a diferencia de PROVEEDOR, esto no
+    rompe nada si está mal, así que no vale la pena que sea un error
+    duro (mismo criterio que _booleano)."""
+    valor = (os.getenv("IDIOMA_PANEL") or "").strip().lower()
+    return valor if valor in IDIOMAS_PANEL else "es"
 
 
 def _profesionales_de(texto: str) -> dict[str, str]:

@@ -101,6 +101,10 @@ Completar (ver `.env.example` para el detalle de cada uno):
       automática)
 - [ ] `DASHBOARD_SECRETO` (para el `/estadisticas` que le vas a mandar al
       dueño)
+- [ ] `IDIOMA_PANEL` (`es`/`pt`/`en`) — el idioma de esa pantalla y de la
+      de aprobar/rechazar turno (lo que ve EL DUEÑO, no el cliente final:
+      eso ya sale solo en su propio idioma). Ponelo en el idioma del
+      dueño de este negocio, no el tuyo.
 - [ ] `POSTGRES_DSN` propio de esta instancia (memoria de conversación +
       tabla de visitas — no compartir la base entre clientes)
 - [ ] `RECORDATORIO_HORAS_ANTES` / `RECORDATORIO_VENTANA_MINUTOS` si el

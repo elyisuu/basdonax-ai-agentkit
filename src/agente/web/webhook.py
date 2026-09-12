@@ -44,6 +44,7 @@ from ..canales.chatwoot import MENSAJE_ADJUNTO_SIN_TEXTO, Chatwoot
 from ..config import Config
 from ..memoria import verificar as verificar_memoria
 from ..mensajes import mensaje_en_idioma_de_conversacion as _mensaje_en_idioma_de_conversacion
+from .textos_panel import t as _t
 
 registro = logging.getLogger("agente.webhook")
 
@@ -80,7 +81,7 @@ def _campo_de_descripcion(descripcion: str, etiqueta: str) -> str:
     return ""
 
 
-def _grafico_mensual(resumen: list[dict]) -> str:
+def _grafico_mensual(resumen: list[dict], idioma: str) -> str:
     """Un gráfico de barras apiladas (nuevos + recurrentes) por mes — puro
     CSS, ninguna librería de gráficos: cada barra son dos `div` con la
     altura calculada a mano en Python. Sirve para mostrar de un vistazo
@@ -115,13 +116,13 @@ def _grafico_mensual(resumen: list[dict]) -> str:
     return f"""
   <div class="grafico">{barras}</div>
   <div class="leyenda">
-    <span><i class="punto nuevos"></i> Nuevos</span>
-    <span><i class="punto recurrentes"></i> Recurrentes</span>
+    <span><i class="punto nuevos"></i> {_t(idioma, 'tarjeta_nuevos')}</span>
+    <span><i class="punto recurrentes"></i> {_t(idioma, 'tarjeta_recurrentes')}</span>
   </div>
 """
 
 
-def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
+def _pagina_estadisticas(resumen: list[dict], detalle: list[dict], idioma: str = "es") -> str:
     """Arma el HTML de /estadisticas a mano — sin motor de plantillas ni
     JavaScript, mismo criterio liviano que el resto del repo (ver
     AGENTS.md: "web/app.py: un solo HTML, sin build ni npm").
@@ -130,14 +131,18 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
     (para que el número grande se vea de una, sin tener que sumar la
     tabla a mano), el gráfico de la tendencia, el resumen mes a mes, y el
     detalle turno por turno.
+
+    `idioma` es IDIOMA_PANEL (config.py) — lo elige el negocio en el
+    .env, no depende de nada dinámico (ver textos_panel.py: es distinto
+    del idioma de los avisos al cliente final, que sí es por conversación).
     """
     ultimo = resumen[0] if resumen else {"turnos": 0, "nuevos": 0, "recurrentes": 0}
     total_historico = sum(f["turnos"] for f in resumen)
-    grafico_html = _grafico_mensual(resumen)
+    grafico_html = _grafico_mensual(resumen, idioma)
 
     if not resumen:
         resumen_filas = (
-            '<tr><td colspan="4" class="vacio">Todavía no hay turnos registrados.</td></tr>'
+            f'<tr><td colspan="4" class="vacio">{_t(idioma, "vacio_turnos")}</td></tr>'
         )
     else:
         resumen_filas = "".join(
@@ -148,7 +153,7 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
 
     if not detalle:
         detalle_filas = (
-            '<tr><td colspan="6" class="vacio">Todavía no hay turnos registrados.</td></tr>'
+            f'<tr><td colspan="6" class="vacio">{_t(idioma, "vacio_turnos")}</td></tr>'
         )
     else:
         # Nombre/teléfono/motivo son texto que la persona escribió por
@@ -160,20 +165,21 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
             f"<td>{escape(v['motivo']) or '—'}</td>"
             f"<td>{escape(v['fecha'])}</td><td>{escape(v['hora'])}</td>"
             + (
-                '<td><span class="chip cancelada">Cancelada</span></td></tr>'
+                f'<td><span class="chip cancelada">{_t(idioma, "chip_cancelada")}</span></td></tr>'
                 if v["cancelado"]
                 else f"<td><span class=\"chip {'nueva' if v['es_nueva'] else 'recurrente'}\">"
-                f"{'Nueva' if v['es_nueva'] else 'Recurrente'}</span></td></tr>"
+                f"{_t(idioma, 'chip_nueva') if v['es_nueva'] else _t(idioma, 'chip_recurrente')}"
+                "</span></td></tr>"
             )
             for v in detalle
         )
 
     return f"""<!doctype html>
-<html lang="es">
+<html lang="{_t(idioma, 'html_lang')}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Estadísticas</title>
+<title>{_t(idioma, 'titulo_pagina')}</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <style>
   :root {{
@@ -231,26 +237,26 @@ def _pagina_estadisticas(resumen: list[dict], detalle: list[dict]) -> str:
 </head>
 <body>
 <div class="contenedor">
-  <h1>Estadísticas</h1>
-  <p class="subtitulo">Turnos confirmados: cuántos, quiénes, y si vuelven.</p>
+  <h1>{_t(idioma, 'titulo_pagina')}</h1>
+  <p class="subtitulo">{_t(idioma, 'subtitulo')}</p>
 
   <div class="tarjetas">
-    <div class="tarjeta"><span class="numero">{ultimo['turnos']}</span><span class="etiqueta">Turnos este mes</span></div>
-    <div class="tarjeta"><span class="numero">{ultimo['nuevos']}</span><span class="etiqueta">Nuevos</span></div>
-    <div class="tarjeta"><span class="numero">{ultimo['recurrentes']}</span><span class="etiqueta">Recurrentes</span></div>
-    <div class="tarjeta"><span class="numero">{total_historico}</span><span class="etiqueta">Total histórico</span></div>
+    <div class="tarjeta"><span class="numero">{ultimo['turnos']}</span><span class="etiqueta">{_t(idioma, 'tarjeta_turnos_mes')}</span></div>
+    <div class="tarjeta"><span class="numero">{ultimo['nuevos']}</span><span class="etiqueta">{_t(idioma, 'tarjeta_nuevos')}</span></div>
+    <div class="tarjeta"><span class="numero">{ultimo['recurrentes']}</span><span class="etiqueta">{_t(idioma, 'tarjeta_recurrentes')}</span></div>
+    <div class="tarjeta"><span class="numero">{total_historico}</span><span class="etiqueta">{_t(idioma, 'tarjeta_total')}</span></div>
   </div>
 {grafico_html}
-  <h2>Turnos por mes</h2>
+  <h2>{_t(idioma, 'encabezado_turnos_por_mes')}</h2>
   <div class="tabla-scroll"><table>
-    <thead><tr><th>Mes</th><th>Turnos</th><th>Nuevos</th><th>Recurrentes</th></tr></thead>
+    <thead><tr><th>{_t(idioma, 'col_mes')}</th><th>{_t(idioma, 'col_turnos')}</th><th>{_t(idioma, 'col_nuevos')}</th><th>{_t(idioma, 'col_recurrentes')}</th></tr></thead>
     <tbody>{resumen_filas}</tbody>
   </table></div>
 
-  <h2>Detalle</h2>
-  <p class="ayuda">Últimos {len(detalle)} turnos, el más reciente primero.</p>
+  <h2>{_t(idioma, 'encabezado_detalle')}</h2>
+  <p class="ayuda">{_t(idioma, 'ayuda_detalle', n=len(detalle))}</p>
   <div class="tabla-scroll"><table>
-    <thead><tr><th>Nombre</th><th>Teléfono</th><th>Motivo</th><th>Fecha</th><th>Hora</th><th></th></tr></thead>
+    <thead><tr><th>{_t(idioma, 'col_nombre')}</th><th>{_t(idioma, 'col_telefono')}</th><th>{_t(idioma, 'col_motivo')}</th><th>{_t(idioma, 'col_fecha')}</th><th>{_t(idioma, 'col_hora')}</th><th></th></tr></thead>
     <tbody>{detalle_filas}</tbody>
   </table></div>
 </div>
@@ -570,30 +576,28 @@ def crear_app(
         (aprobado, o ya no existe porque se rechazó antes), avisa eso en
         vez de repetir el WhatsApp a la persona y el pedido a Calendar.
         """
+        idioma = config.idioma_panel
+
         if accion not in aprobacion.ACCIONES:
-            return HTMLResponse("Acción desconocida.", status_code=404)
+            return HTMLResponse(_t(idioma, "accion_desconocida"), status_code=404)
 
         if not config.reserva_secreto:
             return HTMLResponse(
-                "Este negocio no tiene la aprobación por link configurada "
-                "(falta RESERVA_SECRETO en el .env).",
+                _t(idioma, "sin_reserva_secreto"),
                 status_code=404,
             )
 
         agenda = _calendario_para_aprobacion(config, calendario, profesional)
         if agenda is None:
             return HTMLResponse(
-                "Este negocio no tiene la aprobación por link configurada "
-                "para esta reserva (faltan GOOGLE_CALENDAR_ID/"
-                "GOOGLE_SERVICE_ACCOUNT_JSON en el .env, o el profesional "
-                "del link no coincide con ninguno de PROFESIONALES).",
+                _t(idioma, "sin_calendario_para_reserva"),
                 status_code=404,
             )
 
         if not aprobacion.valido(
             config.reserva_secreto, conversacion, evento_id, token, profesional
         ):
-            return HTMLResponse("Link inválido o vencido.", status_code=403)
+            return HTMLResponse(_t(idioma, "link_invalido"), status_code=403)
 
         try:
             async with candados_reserva[f"{conversacion}:{evento_id}"]:
@@ -611,9 +615,9 @@ def crear_app(
 
                 if accion == "aprobar":
                     if evento is None:
-                        mensaje = "Esta reserva ya no existe (puede que se haya rechazado antes)."
+                        mensaje = _t(idioma, "ya_no_existe")
                     elif evento.get("status") == "confirmed":
-                        mensaje = "Esta reserva ya estaba aprobada. No hace falta hacer nada más."
+                        mensaje = _t(idioma, "ya_aprobada")
                     else:
                         await asyncio.to_thread(agenda.aprobar_evento, evento_id)
                         aviso = await asyncio.to_thread(
@@ -629,10 +633,10 @@ def crear_app(
                         await asyncio.to_thread(
                             _registrar_visita_aprobada, canal, config, conversacion, evento
                         )
-                        mensaje = "Reserva aprobada. Ya se le avisó a la persona."
+                        mensaje = _t(idioma, "aprobada_avisada")
                 else:
                     if evento is None:
-                        mensaje = "Esta reserva ya había sido rechazada antes."
+                        mensaje = _t(idioma, "ya_rechazada")
                     elif evento.get("status") == "confirmed":
                         # Simétrico al chequeo de "aprobar" de arriba.
                         # Reproducible: Chatwoot manda los dos links juntos
@@ -641,11 +645,7 @@ def crear_app(
                         # error, sin este chequeo se cancela un turno que el
                         # cliente ya sabe confirmado, y encima le llega un
                         # WhatsApp diciéndole que no se lo puede atender.
-                        mensaje = (
-                            "Esta reserva ya está confirmada, no se puede "
-                            "rechazar por este link. Para cancelarla, hay "
-                            "que hacerlo directo desde Google Calendar."
-                        )
+                        mensaje = _t(idioma, "ya_confirmada_no_rechazar")
                     else:
                         await asyncio.to_thread(agenda.cancelar_evento, evento_id)
                         aviso = await asyncio.to_thread(
@@ -659,14 +659,15 @@ def crear_app(
                         await asyncio.to_thread(
                             canal.etiquetar, conversacion, "reserva-rechazada"
                         )
-                        mensaje = "Reserva rechazada. Ya se le avisó a la persona."
+                        mensaje = _t(idioma, "rechazada_avisada")
         except Exception as e:
             registro.error("[%s] error al %s la reserva: %s", conversacion, accion, e)
             return HTMLResponse(
-                f"Algo falló: {type(e).__name__}: {e}", status_code=500
+                _t(idioma, "algo_fallo", detalle=f"{type(e).__name__}: {e}"),
+                status_code=500,
             )
 
-        return HTMLResponse(f"<h1>Listo</h1><p>{mensaje}</p>")
+        return HTMLResponse(f"<h1>{_t(idioma, 'listo_titulo')}</h1><p>{mensaje}</p>")
 
     @app.get("/estadisticas")
     async def estadisticas(token: str = "") -> HTMLResponse:
@@ -680,7 +681,7 @@ def crear_app(
             # Sin detalles, mismo motivo que el token del webhook de
             # Chatwoot: a quien prueba la URL no le decimos si el secreto
             # existe, si es corto o si le erró por una letra.
-            return HTMLResponse("No encontrado.", status_code=404)
+            return HTMLResponse(_t(config.idioma_panel, "no_encontrado"), status_code=404)
 
         try:
             resumen = await asyncio.to_thread(visitas.resumen_mensual, config.postgres_dsn)
@@ -692,6 +693,6 @@ def crear_app(
                 status_code=500,
             )
 
-        return HTMLResponse(_pagina_estadisticas(resumen, detalle))
+        return HTMLResponse(_pagina_estadisticas(resumen, detalle, config.idioma_panel))
 
     return app

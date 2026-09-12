@@ -111,6 +111,27 @@ def test_aprobar_con_token_valido_confirma_y_avisa():
     assert _etiqueta_puesta(canal) == "reserva-confirmada"
 
 
+def test_la_pagina_de_listo_respeta_idioma_panel():
+    """El HTML de "Listo, reserva aprobada" es lo que ve el DUEÑO del
+    negocio al abrir el link — con IDIOMA_PANEL=pt tiene que salir en
+    portugués, sin importar el idioma de la conversación con el cliente
+    (eso es aparte, ver mensajes.py)."""
+    canal = ChatwootFalso()
+    calendario = _CalendarioDeMentira()
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    agente.config.idioma_panel = "pt"
+
+    web = cliente(canal, agente, calendario=calendario)
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+
+    with web as w:
+        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+
+    assert "Pronto" in respuesta.text  # "Listo" en pt
+    assert "Marcação aprovada" in respuesta.text
+
+
 def test_aprobar_registra_la_visita(monkeypatch):
     """Recién ACÁ se registra la visita para las estadísticas — no cuando
     se creó la reserva "tentative" (ver herramientas.py, anotar_reserva)."""
