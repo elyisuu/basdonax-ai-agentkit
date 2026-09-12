@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from html import escape
@@ -338,6 +339,112 @@ def _calendario_para_aprobacion(
     return None
 
 
+def _validar_link_reserva(
+    accion: str,
+    config: Config,
+    calendario: Calendario | None,
+    profesional: str,
+    conversacion: str,
+    evento_id: str,
+    token: str,
+) -> tuple[Calendario | None, HTMLResponse | None]:
+    """Las cinco validaciones de un link de /reservas/{accion}, factorizadas
+    para no repetirlas entre el GET (pantalla de confirmar) y el POST
+    (ejecuta de verdad) — ver reserva_confirmar/reserva_ejecutar.
+
+    Devuelve (agenda, None) si el link es válido, o (None, respuesta) si
+    hay que cortar acá con esa respuesta tal cual.
+    """
+    idioma = config.idioma_panel
+
+    if accion not in aprobacion.ACCIONES:
+        return None, HTMLResponse(_t(idioma, "accion_desconocida"), status_code=404)
+
+    if not config.reserva_secreto:
+        return None, HTMLResponse(_t(idioma, "sin_reserva_secreto"), status_code=404)
+
+    agenda = _calendario_para_aprobacion(config, calendario, profesional)
+    if agenda is None:
+        return None, HTMLResponse(_t(idioma, "sin_calendario_para_reserva"), status_code=404)
+
+    if not aprobacion.valido(config.reserva_secreto, conversacion, evento_id, token, profesional):
+        return None, HTMLResponse(_t(idioma, "link_invalido"), status_code=403)
+
+    return agenda, None
+
+
+def _pagina_simple(idioma: str, mensaje: str) -> str:
+    """El HTML mínimo de "Listo, <lo que pasó>" — lo usan tanto el GET
+    (cuando ya no hay nada que confirmar: la reserva ya se resolvió antes)
+    como el POST (después de ejecutar la acción de verdad)."""
+    return f"<h1>{_t(idioma, 'listo_titulo')}</h1><p>{mensaje}</p>"
+
+
+def _pagina_confirmar_reserva(
+    idioma: str,
+    accion: str,
+    evento: dict,
+    conversacion: str,
+    evento_id: str,
+    token: str,
+    profesional: str,
+) -> str:
+    """La pantalla que separa "abrir el link" de "aprobar/rechazar de
+    verdad" — ver el docstring de reserva_confirmar para por qué existe.
+
+    Sin JavaScript: un <form method="post"> con un solo botón. El GET que
+    trajo hasta acá no tocó nada; recién el POST de este formulario (un
+    clic de una persona de verdad, no una vista previa automática)
+    ejecuta la acción.
+    """
+    inicio = evento.get("start", {}).get("dateTime", "")
+    fecha, _, resto = inicio.partition("T")
+    hora = resto[:5]  # "09:00:00+01:00" -> "09:00"
+    # El título se arma en anotar_reserva() como "Nombre (Np)".
+    nombre = evento.get("summary", "").rsplit(" (", 1)[0]
+    motivo = _campo_de_descripcion(evento.get("description", ""), "Aclaración")
+
+    clave_pregunta = "confirmar_pregunta_aprobar" if accion == "aprobar" else "confirmar_pregunta_rechazar"
+    clave_boton = "confirmar_boton_aprobar" if accion == "aprobar" else "confirmar_boton_rechazar"
+
+    fila_motivo = (
+        f"<p><strong>{_t(idioma, 'col_motivo')}:</strong> {escape(motivo)}</p>" if motivo else ""
+    )
+
+    accion_url = f"/reservas/{accion}/{conversacion}/{evento_id}?token={urllib.parse.quote(token)}"
+    if profesional:
+        accion_url += f"&profesional={urllib.parse.quote(profesional)}"
+
+    return f"""<!doctype html>
+<html lang="{_t(idioma, 'html_lang')}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_t(idioma, 'confirmar_titulo')}</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          max-width: 420px; margin: 48px auto; padding: 0 20px; color: #1c2530; }}
+  h1 {{ font-size: 1.3rem; }}
+  button {{ font: inherit; font-weight: 600; padding: 12px 20px; border: none;
+            border-radius: 8px; background: #2f6f4f; color: #fff; width: 100%;
+            margin-top: 20px; }}
+  .ayuda {{ color: #5b6672; font-size: .85rem; margin-top: 16px; }}
+</style>
+</head>
+<body>
+  <h1>{escape(_t(idioma, clave_pregunta))}</h1>
+  <p><strong>{_t(idioma, 'col_nombre')}:</strong> {escape(nombre)}</p>
+  <p><strong>{_t(idioma, 'col_fecha')}:</strong> {escape(fecha)}</p>
+  <p><strong>{_t(idioma, 'col_hora')}:</strong> {escape(hora)}</p>
+  {fila_motivo}
+  <form method="post" action="{escape(accion_url)}">
+    <button type="submit">{escape(_t(idioma, clave_boton))}</button>
+  </form>
+  <p class="ayuda">{escape(_t(idioma, 'confirmar_ayuda'))}</p>
+</body>
+</html>"""
+
+
 def crear_app(
     config: Config | None = None,
     agente: Agente | None = None,
@@ -544,60 +651,112 @@ def crear_app(
         return JSONResponse({"estado": "recibido"})
 
     @app.get("/reservas/{accion}/{conversacion}/{evento_id}")
-    async def reserva_pendiente(
+    async def reserva_confirmar(
         accion: str,
         conversacion: str,
         evento_id: str,
         token: str = "",
         profesional: str = "",
     ) -> HTMLResponse:
-        """El link que alguien del negocio abre desde el celular para
-        aprobar o rechazar una reserva "tentative" (RESERVA_REQUIERE_APROBACION).
+        """El link que le llega al negocio para aprobar o rechazar una
+        reserva "tentative" (RESERVA_REQUIERE_APROBACION) — pero este GET
+        **no aprueba ni rechaza nada todavía**, solo muestra una pantalla
+        de confirmación con un botón. La acción de verdad la ejecuta
+        `reserva_ejecutar()`, más abajo, con un POST — el que dispara el
+        botón de esta pantalla.
 
-        Es HTML y no JSON a propósito: esto lo abre una persona en el
-        navegador, no un programa. No hay login — la seguridad es el token
-        de la URL, mismo criterio que /chatwoot/<token> (ver aprobacion.py).
+        **Por qué en dos pasos, y no de una como antes.** Un GET que
+        ejecuta una acción es cómodo (un link de un clic, sin formulario)
+        pero es indistinguible de cualquier cosa que visite esa URL sin
+        que una persona lo haya tocado — y eso pasa de verdad: Chatwoot (u
+        otra app de mensajería) arma una vista previa de la nota
+        buscándole título a la URL, y ESO ya dispara el GET. Reproducido
+        en producción dos veces: la primera, dos avisos por un solo clic
+        real (ver `candados_reserva` — el arreglo de ENTONCES); la
+        segunda, el 12 sep 2026, un cliente recibió "tu turno quedó
+        confirmado" sin que el dueño del negocio hubiera tocado nada — la
+        vista previa sola alcanzó para aprobar la reserva de punta a
+        punta (Calendar, WhatsApp, la visita registrada). Ningún candado
+        soluciona eso: el problema no es que se dispare dos veces, es que
+        se dispara UNA vez de más, sola. La solución de fondo es la de
+        siempre en la web para esto (como "confirmar cancelación" antes de
+        cancelar algo importante): separar "mirar" (GET, sin efectos) de
+        "actuar" (POST, solo lo dispara un clic real — ninguna vista
+        previa envía formularios).
 
         `profesional` (query param, vacío con un solo profesional) dice en
         qué agenda buscar el evento cuando el negocio tiene varios — lo
         pone `anotar_reserva` al armar el link (ver herramientas.py,
         `_aviso_de_aprobacion`) y la firma del token lo incluye, así que no
         se puede cambiar en la URL sin invalidar el link.
-
-        **Es un GET que ejecuta una acción — a propósito, para que sea un
-        link de un solo clic sin formulario ni JS — pero eso lo hace
-        vulnerable a que alguien más lo dispare sin que la persona lo haya
-        tocado.** Reproducido en producción: la app de Chatwoot en iPhone
-        precargó el link para armar una vista previa de la nota, y ese GET
-        automático ya había aprobado la reserva antes de que el dueño del
-        negocio le diera clic él mismo — el segundo GET (el suyo) chocó
-        contra un evento que ya no estaba "tentative". Por eso, antes de
-        tocar nada, se fija cómo está el evento AHORA: si ya se resolvió
-        (aprobado, o ya no existe porque se rechazó antes), avisa eso en
-        vez de repetir el WhatsApp a la persona y el pedido a Calendar.
         """
         idioma = config.idioma_panel
 
-        if accion not in aprobacion.ACCIONES:
-            return HTMLResponse(_t(idioma, "accion_desconocida"), status_code=404)
+        agenda, error = _validar_link_reserva(
+            accion, config, calendario, profesional, conversacion, evento_id, token
+        )
+        if error is not None:
+            return error
 
-        if not config.reserva_secreto:
+        try:
+            evento = await asyncio.to_thread(agenda.obtener_evento, evento_id)
+        except ErrorDeCalendario as e:
+            if e.codigo not in (404, 410):
+                registro.error("[%s] error al leer la reserva: %s", conversacion, e)
+                return HTMLResponse(
+                    _t(idioma, "algo_fallo", detalle=f"{type(e).__name__}: {e}"),
+                    status_code=500,
+                )
+            evento = None
+        except Exception as e:
+            registro.error("[%s] error al leer la reserva: %s", conversacion, e)
             return HTMLResponse(
-                _t(idioma, "sin_reserva_secreto"),
-                status_code=404,
+                _t(idioma, "algo_fallo", detalle=f"{type(e).__name__}: {e}"),
+                status_code=500,
             )
 
-        agenda = _calendario_para_aprobacion(config, calendario, profesional)
-        if agenda is None:
-            return HTMLResponse(
-                _t(idioma, "sin_calendario_para_reserva"),
-                status_code=404,
-            )
+        # Si ya se resolvió (por otro clic, o por esta misma vista previa
+        # antes del arreglo), no hay nada que confirmar: mostrar el estado
+        # tal cual, sin ofrecer un botón que ya no tiene sentido.
+        if accion == "aprobar":
+            if evento is None:
+                return HTMLResponse(_pagina_simple(idioma, _t(idioma, "ya_no_existe")))
+            if evento.get("status") == "confirmed":
+                return HTMLResponse(_pagina_simple(idioma, _t(idioma, "ya_aprobada")))
+        else:
+            if evento is None:
+                return HTMLResponse(_pagina_simple(idioma, _t(idioma, "ya_rechazada")))
+            if evento.get("status") == "confirmed":
+                return HTMLResponse(
+                    _pagina_simple(idioma, _t(idioma, "ya_confirmada_no_rechazar"))
+                )
 
-        if not aprobacion.valido(
-            config.reserva_secreto, conversacion, evento_id, token, profesional
-        ):
-            return HTMLResponse(_t(idioma, "link_invalido"), status_code=403)
+        return HTMLResponse(
+            _pagina_confirmar_reserva(
+                idioma, accion, evento, conversacion, evento_id, token, profesional
+            )
+        )
+
+    @app.post("/reservas/{accion}/{conversacion}/{evento_id}")
+    async def reserva_ejecutar(
+        accion: str,
+        conversacion: str,
+        evento_id: str,
+        token: str = "",
+        profesional: str = "",
+    ) -> HTMLResponse:
+        """Aprueba o rechaza de verdad — el POST que dispara el botón de
+        `reserva_confirmar()`, arriba. Mismas validaciones (repetidas: este
+        endpoint es alcanzable por su cuenta, no solo desde ese botón) y el
+        mismo candado de siempre contra dos POST casi simultáneos.
+        """
+        idioma = config.idioma_panel
+
+        agenda, error = _validar_link_reserva(
+            accion, config, calendario, profesional, conversacion, evento_id, token
+        )
+        if error is not None:
+            return error
 
         try:
             async with candados_reserva[f"{conversacion}:{evento_id}"]:
@@ -667,7 +826,7 @@ def crear_app(
                 status_code=500,
             )
 
-        return HTMLResponse(f"<h1>{_t(idioma, 'listo_titulo')}</h1><p>{mensaje}</p>")
+        return HTMLResponse(_pagina_simple(idioma, mensaje))
 
     @app.get("/estadisticas")
     async def estadisticas(token: str = "") -> HTMLResponse:

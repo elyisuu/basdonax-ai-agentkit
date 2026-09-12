@@ -608,14 +608,30 @@ Qué cambia en `anotar_reserva` (`herramientas.py`):
    aprobar, uno para rechazar.
 
 Esos links los abre una persona del negocio desde el celular, sin login
-(`GET /reservas/{aprobar|rechazar}/{conversacion}/{evento_id}?token=...`,
-en `web/webhook.py`). La seguridad es el `token` de la URL — mismo criterio
+(`/reservas/{aprobar|rechazar}/{conversacion}/{evento_id}?token=...`, en
+`web/webhook.py`). La seguridad es el `token` de la URL — mismo criterio
 que `CHATWOOT_WEBHOOK_TOKEN` en la URL del webhook, no una cookie ni un
 usuario y contraseña — y lo arma y lo valida `aprobacion.py` con HMAC:
 firma la `(conversación, evento_id)`, así que un link sirve solo para ESA
 reserva puntual. No hay tabla ni sesión que guardar en ningún lado.
 
-Al abrir el link:
+**Dos pasos, GET y POST — no un solo GET que ejecuta, como al principio.**
+El `GET` (`reserva_confirmar()`) solo MIRA: valida el token, muestra
+nombre/fecha/hora/motivo del turno, y un `<form method="post">` con un
+botón — no toca el calendario ni manda ningún WhatsApp. El `POST`
+(`reserva_ejecutar()`, el mismo botón) es el que aprueba o rechaza de
+verdad. Antes era un solo GET, y eso rompió dos veces en producción:
+primero un doble aviso (`candados_reserva`, ver más abajo — el arreglo de
+esa vez), y después, el 12 sep 2026, un cliente recibió "tu turno quedó
+confirmado" **sin que nadie hubiera tocado nada**: Chatwoot arma una
+vista previa de la nota buscándole título a la URL, y esa vista previa
+sola —un GET automático, invisible— ya alcanzaba para aprobar la reserva
+entera (Calendar, WhatsApp, la visita registrada). Ningún candado
+arregla eso: el problema no era "se dispara dos veces", era "se dispara
+una vez de más, sola". La solución de fondo es separar mirar (sin
+efectos) de actuar (un POST, que ninguna vista previa dispara).
+
+Al enviar el formulario (POST):
 
 - **Aprobar** → `Calendario.aprobar_evento()` pasa el evento a "confirmed",
   y se le avisa a la persona por WhatsApp que el turno quedó confirmado.
@@ -874,12 +890,13 @@ Dos lugares donde "leer el estado → decidir → escribir" no alcanza por sí
 solo si dos pedidos llegan casi al mismo tiempo — encontrados los dos en
 producción, no en teoría:
 
-- **`web/webhook.py`, `/reservas/{accion}`** (`candados_reserva`, un
-  `asyncio.Lock` por `conversación:evento_id`): sin esto, la app de
-  Chatwoot precargando el link + el clic real de la persona (o dos clics
-  del negocio) pueden los dos leer "todavía no confirmado" antes de que
-  cualquiera termine de escribirlo — reproducido en vivo, un solo clic,
-  dos avisos de "turno confirmado" por WhatsApp.
+- **`web/webhook.py`, `POST /reservas/{accion}`** (`candados_reserva`, un
+  `asyncio.Lock` por `conversación:evento_id`): sin esto, dos POST casi
+  simultáneos (dos clics del negocio, una doble carga de página) pueden
+  los dos leer "todavía no confirmado" antes de que cualquiera termine de
+  escribirlo — reproducido en vivo (cuando ejecutar todavía colgaba de un
+  GET, ver "Reserva con aprobación manual" más arriba): un solo clic, dos
+  avisos de "turno confirmado" por WhatsApp.
 - **`herramientas.py`, `anotar_reserva`/`reprogramar_mi_reserva`**
   (`_candados_calendario`, un `threading.Lock` por calendario): sin esto,
   dos conversaciones distintas (dos personas) pidiendo el mismo horario

@@ -103,12 +103,56 @@ def test_aprobar_con_token_valido_confirma_y_avisa():
     token = aprobacion.firmar("shhh", "42", "evento-1")
 
     with web as w:
-        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+        respuesta = w.post(f"/reservas/aprobar/42/evento-1?token={token}")
 
     assert respuesta.status_code == 200
     assert calendario.aprobados == ["evento-1"]
     assert "confirmado" in canal.envios()[0].lower()
     assert _etiqueta_puesta(canal) == "reserva-confirmada"
+
+
+def test_abrir_el_link_con_get_no_aprueba_nada_todavia():
+    """El bug de fondo, encontrado en producción el 12 sep 2026: un
+    cliente recibió "tu turno quedó confirmado" sin que el dueño del
+    negocio hubiera tocado nada — Chatwoot arma una vista previa de la
+    nota, y ESO solo (un GET) ya aprobaba la reserva de punta a punta.
+    Ahora el GET tiene que ser inofensivo: solo muestra la pantalla de
+    confirmación, con un formulario — no toca el calendario ni manda
+    ningún WhatsApp."""
+    web, canal, calendario = _armar()
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+
+    with web as w:
+        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+
+    assert respuesta.status_code == 200
+    assert calendario.aprobados == [], "el GET no tiene que aprobar nada"
+    assert canal.envios() == [], "el GET no tiene que avisarle nada al cliente"
+    assert '<form method="post"' in respuesta.text
+    assert f"/reservas/aprobar/42/evento-1?token={token}" in respuesta.text
+
+
+def test_la_pagina_de_confirmar_tiene_los_datos_del_turno():
+    canal = ChatwootFalso()
+    calendario = _CalendarioDeMentira()
+    calendario.eventos["evento-1"] = {
+        "status": "tentative",
+        "summary": "Ana (1p)",
+        "description": "Nombre: Ana\nAclaración: Dolor de espalda",
+        "start": {"dateTime": "2026-09-14T09:00:00+01:00"},
+    }
+    agente = agente_falso(["no debería usarse"])
+    agente.config.reserva_secreto = "shhh"
+    web = cliente(canal, agente, calendario=calendario)
+    token = aprobacion.firmar("shhh", "42", "evento-1")
+
+    with web as w:
+        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+
+    assert "Ana" in respuesta.text
+    assert "2026-09-14" in respuesta.text
+    assert "09:00" in respuesta.text
+    assert "Dolor de espalda" in respuesta.text
 
 
 def test_la_pagina_de_listo_respeta_idioma_panel():
@@ -126,7 +170,7 @@ def test_la_pagina_de_listo_respeta_idioma_panel():
     token = aprobacion.firmar("shhh", "42", "evento-1")
 
     with web as w:
-        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+        respuesta = w.post(f"/reservas/aprobar/42/evento-1?token={token}")
 
     assert "Pronto" in respuesta.text  # "Listo" en pt
     assert "Marcação aprovada" in respuesta.text
@@ -160,7 +204,7 @@ def test_aprobar_registra_la_visita(monkeypatch):
 
     token = aprobacion.firmar("shhh", "42", "evento-1")
     with web as w:
-        w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+        w.post(f"/reservas/aprobar/42/evento-1?token={token}")
 
     assert len(llamadas) == 1
     args, kwargs = llamadas[0]
@@ -194,7 +238,7 @@ def test_aprobar_sin_telefono_ni_aclaracion_los_manda_vacios(monkeypatch):
 
     token = aprobacion.firmar("shhh", "42", "evento-1")
     with web as w:
-        w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+        w.post(f"/reservas/aprobar/42/evento-1?token={token}")
 
     _, kwargs = llamadas[0]
     assert kwargs.get("telefono") == ""
@@ -222,7 +266,7 @@ def test_rechazar_no_registra_ninguna_visita(monkeypatch):
 
     token = aprobacion.firmar("shhh", "42", "evento-1")
     with web as w:
-        w.get(f"/reservas/rechazar/42/evento-1?token={token}")
+        w.post(f"/reservas/rechazar/42/evento-1?token={token}")
 
     assert llamadas == []
 
@@ -232,7 +276,7 @@ def test_rechazar_con_token_valido_cancela_y_avisa():
     token = aprobacion.firmar("shhh", "42", "evento-1")
 
     with web as w:
-        respuesta = w.get(f"/reservas/rechazar/42/evento-1?token={token}")
+        respuesta = w.post(f"/reservas/rechazar/42/evento-1?token={token}")
 
     assert respuesta.status_code == 200
     assert calendario.cancelados == ["evento-1"]
@@ -272,8 +316,8 @@ def test_aprobar_dos_veces_no_repite_el_whatsapp():
     token = aprobacion.firmar("shhh", "42", "evento-1")
 
     with web as w:
-        primera = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
-        segunda = w.get(f"/reservas/aprobar/42/evento-1?token={token}")
+        primera = w.post(f"/reservas/aprobar/42/evento-1?token={token}")
+        segunda = w.post(f"/reservas/aprobar/42/evento-1?token={token}")
 
     assert primera.status_code == 200
     assert segunda.status_code == 200
@@ -283,16 +327,21 @@ def test_aprobar_dos_veces_no_repite_el_whatsapp():
 
 
 def test_dos_aprobar_casi_simultaneos_no_repiten_el_whatsapp():
-    """Reproducido en vivo: un solo clic en el link desde la app de Chatwoot
-    en el celular, y llegaron DOS avisos de "tu turno quedó confirmado" —
-    dos GET casi al mismo tiempo (la vista previa del link que arma la app +
-    el clic real de la persona) pasaron el chequeo de "¿ya está confirmado?"
-    antes de que cualquiera de los dos terminara de escribirlo.
-    `test_aprobar_dos_veces_no_repite_el_whatsapp` ya cubre el caso
-    SECUENCIAL (un clic después del otro); este cubre el caso simultáneo, que
-    es el que de verdad pasó — por eso `_CalendarioLenta`, para agrandar a
-    propósito la ventana de la carrera y que el test falle de verdad si el
-    candado se saca alguna vez."""
+    """Reproducido en vivo (antes de separar GET/POST — ver
+    test_abrir_el_link_con_get_no_aprueba_nada_todavia): un solo clic real,
+    y llegaron DOS avisos de "tu turno quedó confirmado" — dos ejecuciones
+    casi al mismo tiempo (la vista previa del link que arma la app +
+    el clic real de la persona, cuando la ejecución todavía colgaba del
+    GET) pasaron el chequeo de "¿ya está confirmado?" antes de que
+    cualquiera de los dos terminara de escribirlo. Ahora que ejecutar es
+    un POST, este escenario puntual (la vista previa) ya no aplica — pero
+    el candado sigue haciendo falta contra dos POST reales casi
+    simultáneos (dos clics, una doble carga de página), así que el test
+    se queda, apuntando al POST. `test_aprobar_dos_veces_no_repite_el_whatsapp`
+    ya cubre el caso SECUENCIAL (un clic después del otro); este cubre el
+    simultáneo — por eso `_CalendarioLenta`, para agrandar a propósito la
+    ventana de la carrera y que el test falle de verdad si el candado se
+    saca alguna vez."""
     import httpx
 
     from agente.web.webhook import crear_app
@@ -309,7 +358,7 @@ def test_dos_aprobar_casi_simultaneos_no_repiten_el_whatsapp():
     async def correr():
         transporte = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transporte, base_url="http://test") as c:
-            return await asyncio.gather(c.get(url), c.get(url))
+            return await asyncio.gather(c.post(url), c.post(url))
 
     respuestas = asyncio.run(correr())
 
@@ -323,8 +372,8 @@ def test_rechazar_dos_veces_no_repite_el_whatsapp():
     token = aprobacion.firmar("shhh", "42", "evento-1")
 
     with web as w:
-        primera = w.get(f"/reservas/rechazar/42/evento-1?token={token}")
-        segunda = w.get(f"/reservas/rechazar/42/evento-1?token={token}")
+        primera = w.post(f"/reservas/rechazar/42/evento-1?token={token}")
+        segunda = w.post(f"/reservas/rechazar/42/evento-1?token={token}")
 
     assert primera.status_code == 200
     assert segunda.status_code == 200
@@ -339,8 +388,8 @@ def test_aprobar_algo_ya_rechazado_no_lo_revive():
     token_aprobar = aprobacion.firmar("shhh", "42", "evento-1")
 
     with web as w:
-        w.get(f"/reservas/rechazar/42/evento-1?token={token_rechazar}")
-        respuesta = w.get(f"/reservas/aprobar/42/evento-1?token={token_aprobar}")
+        w.post(f"/reservas/rechazar/42/evento-1?token={token_rechazar}")
+        respuesta = w.post(f"/reservas/aprobar/42/evento-1?token={token_aprobar}")
 
     assert respuesta.status_code == 200
     assert "ya no existe" in respuesta.text.lower()
@@ -358,8 +407,8 @@ def test_rechazar_algo_ya_aprobado_no_lo_cancela():
     token_rechazar = aprobacion.firmar("shhh", "42", "evento-1")
 
     with web as w:
-        w.get(f"/reservas/aprobar/42/evento-1?token={token_aprobar}")
-        respuesta = w.get(f"/reservas/rechazar/42/evento-1?token={token_rechazar}")
+        w.post(f"/reservas/aprobar/42/evento-1?token={token_aprobar}")
+        respuesta = w.post(f"/reservas/rechazar/42/evento-1?token={token_rechazar}")
 
     assert respuesta.status_code == 200
     assert "ya está confirmada" in respuesta.text.lower()
@@ -488,7 +537,7 @@ def test_aprobar_con_profesional_usa_la_agenda_correcta(monkeypatch):
     token = aprobacion.firmar("shhh", "42", "evento-1", "Dra. García")
 
     with web as w:
-        respuesta = w.get(
+        respuesta = w.post(
             f"/reservas/aprobar/42/evento-1?token={token}&profesional=Dra.%20Garc%C3%ADa"
         )
 

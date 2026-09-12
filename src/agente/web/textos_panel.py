@@ -70,6 +70,15 @@ TEXTOS: dict[str, dict[str, str]] = {
         "algo_fallo": "Algo falló: {detalle}",
         "listo_titulo": "Listo",
         "no_encontrado": "No encontrado.",
+        "confirmar_titulo": "Confirmar",
+        "confirmar_pregunta_aprobar": "¿Aprobar esta reserva?",
+        "confirmar_pregunta_rechazar": "¿Rechazar esta reserva?",
+        "confirmar_boton_aprobar": "Sí, aprobar",
+        "confirmar_boton_rechazar": "Sí, rechazar",
+        "confirmar_ayuda": (
+            "Esta página no hace nada por sí sola — el turno recién se "
+            "aprueba o rechaza al tocar el botón."
+        ),
     },
     "pt": {
         "html_lang": "pt",
@@ -120,6 +129,15 @@ TEXTOS: dict[str, dict[str, str]] = {
         "algo_fallo": "Ocorreu um erro: {detalle}",
         "listo_titulo": "Pronto",
         "no_encontrado": "Não encontrado.",
+        "confirmar_titulo": "Confirmar",
+        "confirmar_pregunta_aprobar": "Aprovar esta marcação?",
+        "confirmar_pregunta_rechazar": "Rejeitar esta marcação?",
+        "confirmar_boton_aprobar": "Sim, aprovar",
+        "confirmar_boton_rechazar": "Sim, rejeitar",
+        "confirmar_ayuda": (
+            "Esta página não faz nada sozinha — a marcação só é aprovada "
+            "ou rejeitada ao tocar no botão."
+        ),
     },
     "en": {
         "html_lang": "en",
@@ -170,6 +188,15 @@ TEXTOS: dict[str, dict[str, str]] = {
         "algo_fallo": "Something went wrong: {detalle}",
         "listo_titulo": "Done",
         "no_encontrado": "Not found.",
+        "confirmar_titulo": "Confirm",
+        "confirmar_pregunta_aprobar": "Approve this booking?",
+        "confirmar_pregunta_rechazar": "Decline this booking?",
+        "confirmar_boton_aprobar": "Yes, approve",
+        "confirmar_boton_rechazar": "Yes, decline",
+        "confirmar_ayuda": (
+            "This page doesn't do anything by itself — the booking is "
+            "only approved or declined when you tap the button."
+        ),
     },
 }
 
