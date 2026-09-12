@@ -525,6 +525,24 @@ Las cuatro fases del plan ya están completas:
 No hay ninguna fase pendiente de este plan — lo próximo que toque acá es
 lo que surja de usarlo con un cliente real de varios profesionales.
 
+**El horario de atención (`HORARIO_DESDE`/`HORARIO_HASTA`/`HORARIO_FRANJAS`/
+`DIAS_CERRADOS`) es UNO SOLO para todo el negocio, no por profesional —
+decisión a propósito, no un olvido.** `horario.validar()` no sabe nada de
+`profesional`: asume que todos atienden en el mismo horario del local
+(el caso de un consultorio que abre 9-20 y cualquier profesional puede
+tener turno en cualquier momento de esa franja). Si algún día un cliente
+tiene profesionales con horarios personales distintos (uno solo atiende
+mañana, otro solo tarde), hay dos caminos, del más barato al más caro:
+
+1. **Sin tocar código:** que cada profesional mantenga bloqueadas, en su
+   propio Google Calendar, las horas en que no atiende (un evento
+   recurrente de "no disponible"). `franjas_ocupadas`/`anotar_reserva` ya
+   respetan la agenda de cada profesional, así que esto alcanza solo.
+2. **Con código:** sumar un horario por profesional en `PROFESIONALES`
+   (mismo patrón que agregarle el `calendar_id`) y threadearlo por
+   `_error_profesional`/`horario.validar` — recién si el camino 1 no
+   alcanza en la práctica.
+
 ## Reserva con aprobación manual (Nivel 1.5)
 
 Algunos negocios no quieren que el agente confirme solo, ni que la reserva
