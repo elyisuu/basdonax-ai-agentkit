@@ -7,6 +7,9 @@ tengas que explicar cada vez.
 
 Si sos una persona: leé el `README.md`, es el que está escrito para vos.
 
+Si estás sumando un cliente nuevo (no tocando código): el checklist es
+**[ALTA_DE_CLIENTE.md](ALTA_DE_CLIENTE.md)**, no este archivo.
+
 ---
 
 ## Qué es esto
